@@ -495,6 +495,69 @@ def score_pack(p: dict, rvol_rank: int, n5: pd.DataFrame | None = None) -> dict 
     }
 
 
+def rsi(series: pd.Series, period: int = 14) -> pd.Series:
+    delta = series.diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+    avg_gain = gain.ewm(alpha=1 / period, adjust=False, min_periods=period).mean()
+    avg_loss = loss.ewm(alpha=1 / period, adjust=False, min_periods=period).mean()
+    rs = avg_gain / avg_loss.replace(0, float("nan"))
+    out = 100 - 100 / (1 + rs)
+    return out.where(avg_loss != 0, 100.0)
+
+
+def rsi_entry_check(key: str) -> dict | None:
+    """Apply the tested Daily RSI 30-cross + 15m reversal filter."""
+    try:
+        daily = fetch_daily(key)
+        if daily is None or len(daily) < 30:
+            return None
+        d = daily.copy()
+        # Only completed daily candles are allowed.
+        if d["ts"].iloc[-1].date() == now().date():
+            d = d.iloc[:-1]
+        if len(d) < 20:
+            return None
+        d["rsi"] = rsi(d["c"])
+        prev_d, last_d = d.iloc[-2], d.iloc[-1]
+        if pd.isna(prev_d["rsi"]) or pd.isna(last_d["rsi"]):
+            return None
+        if not (float(prev_d["rsi"]) <= 30 and float(last_d["rsi"]) > 30):
+            return None
+
+        intra = fetch_15m(key)
+        if intra is None or len(intra) < 20:
+            return None
+        x = intra[intra["ts"].dt.date == now().date()].copy()
+        if x.empty:
+            return None
+        x["rsi"] = rsi(x["c"])
+        x = x.dropna().reset_index(drop=True)
+        for k in range(1, len(x)):
+            cur = float(x.loc[k, "rsi"])
+            prev = float(x.loc[k - 1, "rsi"])
+            recent = x["rsi"].iloc[max(0, k - 3):k]
+            if len(recent) and float(recent.min()) <= 30 and prev <= 30 and cur > 30 and cur > prev:
+                return {
+                    "daily_rsi_prev": round(float(prev_d["rsi"]), 2),
+                    "daily_rsi": round(float(last_d["rsi"]), 2),
+                    "rsi15_touch": round(float(recent.min()), 2),
+                    "rsi15_signal": round(cur, 2),
+                    "rsi15_time": x.loc[k, "ts"].strftime("%H:%M:%S"),
+                }
+    except Exception:
+        return None
+    return None
+
+
+def fetch_15m(key: str) -> pd.DataFrame:
+    url = f"https://api.upstox.com/v3/historical-candle/intraday/{quote(key, safe='')}/minutes/15"
+    res = get(url)
+    if res.status_code != 200:
+        return pd.DataFrame()
+    return candles(res.json().get("data", {}).get("candles", []))
+
+
 def regime(nifty: pd.DataFrame) -> str:
     if nifty is None or len(nifty) < 30:
         return "UNKNOWN"
@@ -526,11 +589,12 @@ def print_picks(reg: str, rows: list[dict]):
         say(f"     Pehla nikaal (0.7% ~ Rs {r['rs1500']:.0f}): {r['t1']}")
         say(f"     Doosra nikaal (1.2%): {r['t2']}")
         say(f"     Kyun: {r['why']}")
-        say("     NIKAL:")
-        say("       • 15–20 min mein upar nahi → nikal")
-        say(f"       • 5-min BAND {r['band']} ke neeche band → nikal")
-        say("       • 3:10 pe jo bacha → nikal")
-        say("       • T1 laga to aadha nikal, baaki T2 / 3:10")
+        say(f"     RSI: daily {r.get('daily_rsi_prev')} → {r.get('daily_rsi')} | 15m touch {r.get('rsi15_touch')} → signal {r.get('rsi15_signal')} @ {r.get('rsi15_time')}")
+        say("     TRADE: BUY signal")
+        say("       • 1% TSL: highest price ke 1% neeche trail")
+        say("       • Entry price se neeche sell nahi — floor = entry")
+        say("       • TSL sirf price ke favour mein move karega")
+        say("       • 3:10 PM EOD: jo position bachi, exit")
     say("\n" + "#" * 90)
 
 
@@ -596,10 +660,20 @@ def cycle(mapping: dict[str, str]):
             scored.append(row)
 
     scored.sort(key=lambda x: x["score"], reverse=True)
-    picks = scored[:MAX_PICKS]
+
+    # Existing screener is only the candidate generator. A candidate is
+    # BUY-eligible only after the tested RSI confirmation:
+    # daily RSI(14) crossed up through 30 + 15m RSI touched <=30 and reversed above 30.
+    rsi_checked = []
+    for row in scored:
+        check = rsi_entry_check(mapping[row["sym"]])
+        if check:
+            row.update(check)
+            rsi_checked.append(row)
+
+    picks = rsi_checked[:MAX_PICKS]
     if reg == "RISK_OFF":
-        # Don't hard-zero every stock; require exceptional setups in a weak index regime.
-        picks = [r for r in scored if r["score"] >= max(MIN_SCORE + 12, 62)][:MAX_PICKS]
+        picks = [r for r in rsi_checked if r["score"] >= max(MIN_SCORE + 12, 62)][:MAX_PICKS]
     print_picks(reg, picks)
     try:
         with open(STATE, "w") as f:
