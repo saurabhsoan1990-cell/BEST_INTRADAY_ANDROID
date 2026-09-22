@@ -15,7 +15,6 @@ CAPITAL = float(os.getenv("DO_CAPITAL", "200000"))
 FOCUS_DATE = os.getenv("FOCUS_DATE", "").strip()
 MAX_PICKS = None  # unlimited signals; every qualifying stock can trigger
 MIN_SCORE = 50.0
-TOP_INPLAY = 20
 NIFTY_KEY = "NSE_INDEX|Nifty 50"
 IST = "Asia/Kolkata"
 OUT = "backtest_results"
@@ -153,9 +152,9 @@ def signal_pack(feat, daydf, hist, day, nifty5_day):
                 "loc":loc,"ext":ext,"irs":irs,"strong":strong}
     return None
 
-def score(p,rank):
+def score(p):
     f=p["feat"]; px=p["px"]; vw=p["vw"]; chg=p["chg"]
-    sc=max(0,22-rank)
+    sc=0  # rank-neutral: each qualifying stock is evaluated independently
     if f["stack"]: sc+=8
     sc+=min(12,max(0,(f["rs"]-50)*.3))
     if p["irs"]>.30: sc+=6
@@ -229,12 +228,11 @@ def main():
             hist=[x for x in hist if len(x)>=50][-20:]
             p=signal_pack(f,i,hist,day,n5)
             if p: packs.append(p)
-        # Preserve the strategy's rank component, but rank only signals that
-        # actually existed at their real signal time.
-        packs.sort(key=lambda x:x["rvol"],reverse=True)
+        # No TOP_INPLAY filter and no rank-based scoring: every qualifying stock
+        # is evaluated independently, regardless of scan order or RVOL rank.
         scored=[]
-        for rank,p in enumerate(packs[:TOP_INPLAY],1):
-            q=score(p,rank)
+        for p in packs:
+            q=score(p)
             if q: scored.append(q)
         scored=sorted(scored,key=lambda x:x["score"],reverse=True)
         selected={q["sym"] for q in scored}  # no daily top-N cap
