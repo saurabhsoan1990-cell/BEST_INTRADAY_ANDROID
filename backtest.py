@@ -1,288 +1,100 @@
 #!/usr/bin/env python3
-import os, time, gzip, hashlib, json
-from io import BytesIO, StringIO
-from datetime import date, timedelta, datetime, time as dtime
+import os,time,gzip,json
+from io import BytesIO,StringIO
+from datetime import date,timedelta
 from urllib.parse import quote
-from concurrent.futures import ThreadPoolExecutor, as_completed
-
-import pandas as pd
-import requests
+from concurrent.futures import ThreadPoolExecutor,as_completed
+import pandas as pd,requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-TOKEN = os.environ["UPSTOX_ACCESS_TOKEN"].strip()
-CAPITAL = float(os.getenv("DO_CAPITAL", "200000"))
-FOCUS_DATE = os.getenv("FOCUS_DATE", "").strip()
-MAX_PICKS = None  # unlimited signals; every qualifying stock can trigger
-MIN_SCORE = 0.0  # diagnostic run: log the full raw score distribution
-NIFTY_KEY = "NSE_INDEX|Nifty 50"
-IST = "Asia/Kolkata"
-OUT = "backtest_results"
-os.makedirs(OUT, exist_ok=True)
-
-S = requests.Session()
-S.mount("https://", HTTPAdapter(max_retries=Retry(total=3, backoff_factor=.5, status_forcelist=(429,500,502,503,504))))
-S.headers.update({"Accept":"application/json","Authorization":f"Bearer {TOKEN}","User-Agent":"BEST-INTRADAY-backtest/1.0"})
-last_req = 0.0
-def get(url, timeout=45):
-    global last_req
-    wait = .10 - (time.time()-last_req)
-    if wait > 0: time.sleep(wait)
-    r = S.get(url, timeout=timeout)
-    last_req = time.time()
-    if r.status_code == 429:
-        time.sleep(2)
-        r = S.get(url, timeout=timeout)
-    r.raise_for_status()
-    return r
-
+TOKEN=os.environ["UPSTOX_ACCESS_TOKEN"].strip(); CAPITAL=float(os.getenv("DO_CAPITAL","200000"))
+FOCUS_DATE=os.getenv("FOCUS_DATE","").strip(); IST="Asia/Kolkata"; OUT="backtest_results"; os.makedirs(OUT,exist_ok=True)
+S=requests.Session(); S.mount("https://",HTTPAdapter(max_retries=Retry(total=3,backoff_factor=.5,status_forcelist=(429,500,502,503,504))))
+S.headers.update({"Accept":"application/json","Authorization":f"Bearer {TOKEN}","User-Agent":"BEST-INTRADAY-RSI/1.0"}); last_req=0
+def get(u,t=60):
+ global last_req
+ w=.1-(time.time()-last_req)
+ if w>0: time.sleep(w)
+ r=S.get(u,timeout=t); last_req=time.time()
+ if r.status_code==429: time.sleep(2); r=S.get(u,timeout=t)
+ r.raise_for_status(); return r
 def candles(raw):
-    if not raw: return pd.DataFrame(columns=["ts","o","h","l","c","v","oi"])
-    df=pd.DataFrame(raw,columns=["ts","o","h","l","c","v","oi"])
-    df["ts"]=pd.to_datetime(df["ts"],utc=True).dt.tz_convert(IST)
-    for c in ["o","h","l","c","v","oi"]: df[c]=pd.to_numeric(df[c],errors="coerce")
-    return df.sort_values("ts").reset_index(drop=True)
-
-def historical(key, unit, interval, to_d, from_d):
-    url=f"https://api.upstox.com/v3/historical-candle/{quote(key,safe='')}/{unit}/{interval}/{to_d}/{from_d}"
-    try: return candles(get(url).json().get("data",{}).get("candles",[]))
-    except Exception: return pd.DataFrame()
-
+ if not raw:return pd.DataFrame(columns=["ts","o","h","l","c","v","oi"])
+ d=pd.DataFrame(raw,columns=["ts","o","h","l","c","v","oi"]); d.ts=pd.to_datetime(d.ts,utc=True).dt.tz_convert(IST)
+ for c in ["o","h","l","c","v","oi"]: d[c]=pd.to_numeric(d[c],errors="coerce")
+ return d.sort_values("ts").reset_index(drop=True)
+def historical(key,unit,interval,to_d,from_d):
+ try:return candles(get(f"https://api.upstox.com/v3/historical-candle/{quote(key,safe='')}/{unit}/{interval}/{to_d}/{from_d}").json().get("data",{}).get("candles",[]))
+ except Exception:return pd.DataFrame()
 def nifty500():
-    r=requests.get("https://en.wikipedia.org/wiki/NIFTY_500",headers={"User-Agent":"Mozilla/5.0"},timeout=30)
-    r.raise_for_status()
-    tables=pd.read_html(StringIO(r.text))
-    t=max(tables,key=lambda x:x.shape[0])
-    col=t.columns[2]
-    for c in t.columns:
-        vals=t[c].astype(str).str.upper().head(30).tolist()
-        if any(x in vals for x in ("RELIANCE","TCS","INFY","HDFCBANK")): col=c; break
-    return sorted({x.strip().upper() for x in t[col].astype(str) if x.isascii() and any(ch.isalpha() for ch in x)})
-
+ r=requests.get("https://en.wikipedia.org/wiki/NIFTY_500",headers={"User-Agent":"Mozilla/5.0"},timeout=30); r.raise_for_status()
+ t=max(pd.read_html(StringIO(r.text)),key=lambda x:x.shape[0]); col=t.columns[2]
+ for c in t.columns:
+  if any(x in t[c].astype(str).str.upper().head(30).tolist() for x in ["RELIANCE","TCS","INFY","HDFCBANK"]): col=c; break
+ return sorted({x.strip().upper() for x in t[col].astype(str) if x.isascii() and any(ch.isalpha() for ch in x)})
 def instrument_map(symbols):
-    r=get("https://assets.upstox.com/market-quote/instruments/exchange/complete.csv.gz",timeout=90)
-    m=pd.read_csv(gzip.open(BytesIO(r.content),"rt"),low_memory=False)
-    eq=m[(m.exchange=="NSE_EQ") & (m.instrument_type.isin(["EQ","EQUITY"]))]
-    eq=eq[eq.tradingsymbol.isin(symbols)].drop_duplicates("tradingsymbol")
-    return eq.set_index("tradingsymbol").instrument_key.to_dict()
-
-def tr(df):
-    p=df.c.shift(1)
-    return pd.concat([(df.h-df.l).abs(),(df.h-p).abs(),(df.l-p).abs()],axis=1).max(axis=1)
-
-def daily_feat(sym,d,nifty,asof):
-    d=d[d.ts.dt.date < asof].copy()
-    n=nifty[nifty.ts.dt.date < asof].copy()
-    if len(d)<60 or len(n)<60: return None
-    c=d.c; nc=n.c
-    ema20=c.ewm(span=20,adjust=False).mean().iloc[-1]
-    ema50=c.ewm(span=50,adjust=False).mean().iloc[-1]
-    px=float(c.iloc[-1]); atr=float(tr(d).rolling(14).mean().iloc[-1] or 0)
-    if atr<=0: return None
-    sret=float(c.iloc[-1]/c.iloc[-21]-1); nret=float(nc.iloc[-1]/nc.iloc[-21]-1)
-    return {"sym":sym,"prev":px,"ema20":float(ema20),"ema50":float(ema50),"atr":atr,
-            "rs_raw":sret-nret,"above":px>ema20 and px>ema50,"stack":ema20>ema50}
-
-def attach_rs(rows):
-    rows=sorted(rows,key=lambda x:x["rs_raw"])
-    n=max(len(rows)-1,1)
-    for i,r in enumerate(rows): r["rs"]=100*i/n
-    return rows
-
-def session_day(df,day):
-    return df[df.ts.dt.date==day].copy()
-
-def rvol_at(sess, hist, last_t):
-    if sess.empty: return None
-    today=float(sess[sess.ts.dt.time<=last_t].v.sum())
-    vals=[]
-    for h in hist:
-        x=h[h.ts.dt.time<=last_t]
-        if not x.empty and x.v.sum()>0: vals.append(float(x.v.sum()))
-    if len(vals)<10: return None
-    base=float(pd.Series(vals).median())
-    return today/base if base else None
-
-def vwap(df):
-    if df.empty: return None
-    tp=(df.h+df.l+df.c)/3
-    return float((tp*df.v).sum()/df.v.sum()) if df.v.sum()>0 else float(df.c.iloc[-1])
-
-def signal_pack(feat, daydf, hist, day, nifty5_day):
-    s=session_day(daydf,day)
-    if len(s)<5: return None
-    orbars=s[(s.ts.dt.time>=dtime(9,15))&(s.ts.dt.time<dtime(9,30))]
-    if len(orbars)<2: return None
-    oh=float(orbars.h.max()); ol=float(orbars.l.min())
-    prev_close=feat["prev"]
-
-    # Find the first genuine breakout after the ORB using only candles available
-    # at that moment. No full-day high/low/VWAP/volume is used for the signal.
-    for idx in range(1,len(s)):
-        bar=s.iloc[idx]
-        if bar.ts.time()<dtime(9,30): continue
-        prefix=s.iloc[:idx+1]
-        prior=s.iloc[idx-1]
-        px=float(bar.c)
-        vw=vwap(prefix)
-        rv=rvol_at(prefix,hist,bar.ts.time())
-        if rv is None or vw is None: continue
-        chg=(px/prev_close-1)*100
-        if px<50 or px>20000 or chg>=3.5: continue
-        if px<vw or px<oh: continue
-        if float(prior.c)>oh or px<=oh: continue
-        if not (float(prior.c)<=oh<px): continue
-
-        dh=float(prefix.h.max()); dl=float(prefix.l.min())
-        loc=(px-dl)/max(dh-dl,.01)
-        if loc<.55: continue
-        if float(prefix.c.tail(4).iloc[-1])<float(prefix.c.tail(4).iloc[0]): continue
-        ext=(px-vw)/feat["atr"]
-        if ext>1.6: continue
-
-        ni_start=float(nifty5_day.c.iloc[0]) if not nifty5_day.empty else 0
-        ncut=nifty5_day[nifty5_day.ts<=bar.ts]
-        ni=float(ncut.c.iloc[-1]) if not ncut.empty else ni_start
-        ni_pct=(ni/ni_start-1)*100 if ni_start else 0
-        si=(px/float(prefix.c.iloc[0])-1)*100
-        irs=si-ni_pct
-        strong=dl>=prev_close*.995
-        return {"feat":feat,"sess":prefix,"px":px,"vw":vw,"chg":chg,"rvol":rv,
-                "or_h":oh,"or_l":ol,"day_l":dl,"day_h":dh,"signal_ts":bar.ts,
-                "loc":loc,"ext":ext,"irs":irs,"strong":strong}
-    return None
-
-def score(p):
-    f=p["feat"]; px=p["px"]; vw=p["vw"]; chg=p["chg"]
-    sc=0  # rank-neutral: each qualifying stock is evaluated independently
-    if f["stack"]: sc+=8
-    sc+=min(12,max(0,(f["rs"]-50)*.3))
-    if p["irs"]>.30: sc+=6
-    elif p["irs"]<-.30: sc-=4
-    sc+=10
-    if p["strong"]: sc+=8
-    if p["loc"]>=.8: sc+=8
-    if .3<=chg<=2.2: sc+=10
-    elif -.3<=chg<.3: sc+=6
-    if .15<=p["ext"]<=.9: sc+=6
-    if sc<MIN_SCORE: return None
-    orw=p["or_h"]-p["or_l"]
-    t1=min(px+orw,px*1.012); t2=min(px+1.5*orw,px*1.018)
-    band=max(p["or_l"],min(vw,(p["day_l"]+vw)/2))
-    return {"sym":f["sym"],"entry":px,"score":round(sc,1),"rvol":p["rvol"],
-            "t1":t1,"t2":t2,"band":band,"signal_ts":p["signal_ts"]}
-
-def simulate(pick, future, entry_ts):
-    entry=pick["entry"]; t1=pick["t1"]; t2=pick["t2"]; band=pick["band"]
-    for _,b in future.iterrows():
-        ts=b.ts
-        # Exit only by target or stop-loss. No 20-minute/time-based exit.
-        if b.l<=band: return band-entry, "SL", ts
-        if b.h>=t2: return t2-entry, "T2", ts
-        if b.h>=t1: return t1-entry, "T1", ts
-    # If neither target nor SL is hit by session end, close at EOD.
-    return float(future.c.iloc[-1])-entry, "EOD", future.ts.iloc[-1]
-
+ r=get("https://assets.upstox.com/market-quote/instruments/exchange/complete.csv.gz",90); m=pd.read_csv(gzip.open(BytesIO(r.content),"rt"),low_memory=False)
+ q=m[(m.exchange=="NSE_EQ")&m.instrument_type.isin(["EQ","EQUITY"])]; q=q[q.tradingsymbol.isin(symbols)].drop_duplicates("tradingsymbol")
+ return q.set_index("tradingsymbol").instrument_key.to_dict()
+def rsi(s,p=14):
+ d=s.diff(); g=d.clip(lower=0); l=-d.clip(upper=0); ag=g.ewm(alpha=1/p,adjust=False,min_periods=p).mean(); al=l.ewm(alpha=1/p,adjust=False,min_periods=p).mean()
+ x=100-100/(1+ag/al.replace(0,float("nan"))); return x.where(al!=0,100.0)
+def daily_ok(d,day):
+ x=d[d.ts.dt.date<day].copy()
+ if len(x)<20:return False,None,None
+ x["r"]=rsi(x.c); a,b=x.iloc[-2],x.iloc[-1]
+ if pd.isna(a.r) or pd.isna(b.r):return False,None,None
+ return bool(a.r<=30 and b.r>30),float(a.r),float(b.r)
+def signal15(i,day):
+ x=i[i.ts.dt.date==day].copy()
+ if len(x)<20:return None
+ x["r"]=rsi(x.c); x=x.dropna().reset_index(drop=True)
+ for k in range(1,len(x)):
+  cur,prev=float(x.r.iloc[k]),float(x.r.iloc[k-1]); recent=x.r.iloc[max(0,k-3):k]
+  if len(recent) and float(recent.min())<=30 and prev<=30 and cur>30 and cur>prev:
+   return {"ts":x.ts.iloc[k],"entry":float(x.c.iloc[k]),"rsi":cur,"touch":float(recent.min())}
+ return None
+def simulate(i,day,sig):
+ pre=i[i.ts<=sig["ts"]].c; fut=i[(i.ts.dt.date==day)&(i.ts>sig["ts"])].copy()
+ if fut.empty:return None
+ rr=rsi(pd.concat([pre,fut.c],ignore_index=True)).iloc[-len(fut):].to_numpy()
+ for z,(idx,b) in enumerate(fut.iterrows()):
+  if rr[z]>=70:return float(b.c),"RSI70",b.ts
+ return float(fut.c.iloc[-1]),"EOD",fut.ts.iloc[-1]
 def main():
-    today=date.today()
-    end=(date.fromisoformat(FOCUS_DATE) if FOCUS_DATE else today-timedelta(days=1))
-    # Always fetch a normal intraday window; when focused, process only the requested day.
-    start=end-timedelta(days=31)
-    daily_start=end-timedelta(days=140)
-    print(f"BACKTEST {start} -> {end}")
-    syms=nifty500()
-    mp=instrument_map(syms)
-    print("universe",len(mp))
-    nifty=historical(NIFTY_KEY,"days","1",end,daily_start)
-    nifty5=historical(NIFTY_KEY,"minutes","5",end,start)
-    if nifty.empty or nifty5.empty: raise RuntimeError("Nifty historical data unavailable")
-    data={}
-    def load(item):
-        sym,key=item
-        d=historical(key,"days","1",end,daily_start)
-        i=historical(key,"minutes","5",end,start)
-        return sym,d,i
-    with ThreadPoolExecutor(max_workers=8) as ex:
-        fs=[ex.submit(load,x) for x in mp.items()]
-        for j,f in enumerate(as_completed(fs),1):
-            try:
-                sym,d,i=f.result()
-                if not d.empty and not i.empty: data[sym]=(d,i)
-            except Exception: pass
-            if j%50==0: print("loaded",j)
-    data_feats={day: attach_rs([f for f in (daily_feat(sym,d,nifty,day) for sym,(d,i) in data.items()) if f]) for day in sorted(set(nifty5.ts.dt.date))}
-    days=sorted(set(nifty5.ts.dt.date))
-    if FOCUS_DATE:
-        days=[end] if end in days else []
-    trades=[]
-    signal_log=[]
-    score_buckets={"<50":0,"50-59":0,"60-69":0,"70-79":0,"80+":0}
-    for day in days:
-        if day.weekday()>=5: continue
-        feats=[f for f in data_feats.get(day,[]) if f["above"] and f["rs"]>=50]
-        packs=[]
-        n5=session_day(nifty5,day)
-        for f in feats:
-            i=data[f["sym"]][1]
-            hist=[i[i.ts.dt.date==x].copy() for x in sorted(set(i.ts.dt.date)) if x<day]
-            hist=[x for x in hist if len(x)>=50][-20:]
-            p=signal_pack(f,i,hist,day,n5)
-            if p: packs.append(p)
-        # No TOP_INPLAY filter and no rank-based scoring: every qualifying stock
-        # is evaluated independently, regardless of scan order or RVOL rank.
-        scored=[]
-        for p in packs:
-            q=score(p)
-            if q:
-                if q["score"] < 50: score_buckets["<50"] += 1
-                elif q["score"] < 60: score_buckets["50-59"] += 1
-                elif q["score"] < 70: score_buckets["60-69"] += 1
-                elif q["score"] < 80: score_buckets["70-79"] += 1
-                else: score_buckets["80+"] += 1
-                scored.append(q)
-        scored=sorted(scored,key=lambda x:x["score"],reverse=True)
-        selected={q["sym"] for q in scored}  # no daily top-N cap
-        for q in scored:
-            signal_log.append({"date":str(day),"signal_time":q["signal_ts"].strftime("%H:%M:%S"),"symbol":q["sym"],"score":q["score"],"rvol":q["rvol"],"selected":q["sym"] in selected})
-        # Do not truncate: every scored qualifying signal is tradable.
-        for q in scored:
-            s=data[q["sym"]][1]
-            fut=s[(s.ts.dt.date==day)&(s.ts>q["signal_ts"])]
-            if fut.empty: continue
-            entry_ts=q["signal_ts"]
-            pnl,reason,exit_ts=simulate(q,fut,entry_ts)
-            qty=max(1,int(CAPITAL//q["entry"]))
-            gross=pnl*qty
-            # Approximate retail cash-equity costs; exact broker plan can be substituted later.
-            turnover=(q["entry"]+q["entry"]+pnl)*qty
-            charges=max(0.0,turnover*0.00035)
-            net=gross-charges
-            trades.append({"date":str(day),"signal_time":q["signal_ts"].strftime("%H:%M:%S"),"exit_time":exit_ts.strftime("%H:%M:%S"),"symbol":q["sym"],"entry":q["entry"],"exit":q["entry"]+pnl,
-                           "qty":qty,"gross_pnl":gross,"charges_est":charges,"net_pnl":net,
-                           "score":q["score"],"rvol":q["rvol"],"reason":reason})
-    df=pd.DataFrame(trades)
-    df.to_csv(f"{OUT}/trades.csv",index=False)
-    pd.DataFrame(signal_log).to_csv(f"{OUT}/signals.csv",index=False)
-    if df.empty:
-        summary={"trades":0}
-    else:
-        wins=df[df.net_pnl>0].net_pnl
-        losses=df[df.net_pnl<=0].net_pnl
-        eq=df.net_pnl.cumsum()
-        dd=eq-eq.cummax()
-        summary={"period":f"{start} to {end}","trades":int(len(df)),"wins":int((df.net_pnl>0).sum()),
-                 "win_rate_pct":round(100*(df.net_pnl>0).mean(),2),
-                 "gross_pnl":round(df.gross_pnl.sum(),2),"estimated_charges":round(df.charges_est.sum(),2),
-                 "net_pnl":round(df.net_pnl.sum(),2),"avg_trade":round(df.net_pnl.mean(),2),
-                 "profit_factor":round(wins.sum()/abs(losses.sum()),3) if losses.sum()<0 else None,
-                 "max_drawdown":round(dd.min(),2),"best_trade":round(df.net_pnl.max(),2),
-                 "worst_trade":round(df.net_pnl.min(),2),"max_consecutive_losses":0}
-        streak=best=0
-        for x in df.net_pnl:
-            if x<=0: streak+=1; best=max(best,streak)
-            else: streak=0
-        summary["max_consecutive_losses"]=best
-    summary["score_buckets"]=score_buckets
-    with open(f"{OUT}/summary.json","w") as f: json.dump(summary,f,indent=2)
-    print(json.dumps(summary,indent=2))
-if __name__=="__main__": main()
+ end=date.fromisoformat(FOCUS_DATE) if FOCUS_DATE else date.today()-timedelta(days=1); start=end-timedelta(days=31); ds=end-timedelta(days=180)
+ print(f"RSI BACKTEST {start} -> {end}"); syms=nifty500(); mp=instrument_map(syms); data={}
+ def load(item):
+  s,k=item; return s,historical(k,"days","1",end,ds),historical(k,"minutes","15",end,start)
+ with ThreadPoolExecutor(max_workers=8) as ex:
+  fs=[ex.submit(load,x) for x in mp.items()]
+  for n,f in enumerate(as_completed(fs),1):
+   try:
+    s,d,i=f.result()
+    if not d.empty and not i.empty:data[s]=(d,i)
+   except Exception:pass
+   if n%50==0:print("loaded",n)
+ days=sorted({z for _,(_,i) in data.items() for z in i.ts.dt.date}); days=[end] if FOCUS_DATE and end in days else days
+ trades=[]; signals=[]; cross=0
+ for day in days:
+  if day.weekday()>=5:continue
+  for s,(d,i) in data.items():
+   ok,dr0,dr1=daily_ok(d,day)
+   if not ok:continue
+   cross+=1; sig=signal15(i,day)
+   if not sig:continue
+   signals.append({"date":str(day),"symbol":s,"signal_time":sig["ts"].strftime("%H:%M:%S"),"daily_rsi_prev":dr0,"daily_rsi":dr1,"15m_touch_rsi":sig["touch"],"15m_signal_rsi":sig["rsi"],"entry":sig["entry"]})
+   out=simulate(i,day,sig)
+   if not out:continue
+   ex,reason,xt=out; qty=max(1,int(CAPITAL//sig["entry"])); gross=(ex-sig["entry"])*qty; charges=(sig["entry"]+ex)*qty*.00035; net=gross-charges
+   trades.append({"date":str(day),"symbol":s,"signal_time":sig["ts"].strftime("%H:%M:%S"),"exit_time":xt.strftime("%H:%M:%S"),"entry":sig["entry"],"exit":ex,"qty":qty,"gross_pnl":gross,"charges_est":charges,"net_pnl":net,"daily_rsi_prev":dr0,"daily_rsi":dr1,"15m_touch_rsi":sig["touch"],"15m_signal_rsi":sig["rsi"],"reason":reason})
+ df=pd.DataFrame(trades); pd.DataFrame(signals).to_csv(f"{OUT}/signals.csv",index=False); df.to_csv(f"{OUT}/trades.csv",index=False)
+ if df.empty: summary={"period":f"{start} to {end}","daily_cross_events":cross,"signals":len(signals),"trades":0}
+ else:
+  w=df[df.net_pnl>0].net_pnl; l=df[df.net_pnl<=0].net_pnl; eq=df.net_pnl.cumsum(); dd=eq-eq.cummax()
+  summary={"period":f"{start} to {end}","daily_cross_events":cross,"signals":len(signals),"trades":len(df),"wins":int((df.net_pnl>0).sum()),"win_rate_pct":round(100*(df.net_pnl>0).mean(),2),"gross_pnl":round(df.gross_pnl.sum(),2),"estimated_charges":round(df.charges_est.sum(),2),"net_pnl":round(df.net_pnl.sum(),2),"avg_trade":round(df.net_pnl.mean(),2),"profit_factor":round(w.sum()/abs(l.sum()),3) if l.sum()<0 else None,"max_drawdown":round(dd.min(),2),"best_trade":round(df.net_pnl.max(),2),"worst_trade":round(df.net_pnl.min(),2),"rsi70_exits":int((df.reason=="RSI70").sum()),"eod_exits":int((df.reason=="EOD").sum())}
+ summary["rules"]={"daily":"14 RSI: previous <=30 and latest >30 on completed daily candles","15m_entry":"recent 3 bars touched <=30, then RSI crosses above 30","target":"15m RSI >=70","stop":"none specified; EOD fallback"}
+ with open(f"{OUT}/summary.json","w") as f:json.dump(summary,f,indent=2)
+ print(json.dumps(summary,indent=2))
+if __name__=="__main__":main()
