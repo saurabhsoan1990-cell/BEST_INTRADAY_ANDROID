@@ -195,14 +195,12 @@ def main():
                 if not d.empty and not i.empty: data[sym]=(d,i)
             except Exception: pass
             if j%50==0: print("loaded",j)
-    data_feats={day: attach_rs([f for f in (daily_feat(sym,d,nifty,day) for sym,(d,i) in data.items()) if f]) for day in sorted(set(nifty5.ts.dt.date))}\n    days=sorted(set(nifty5.ts.dt.date))
+    data_feats={day: attach_rs([f for f in (daily_feat(sym,d,nifty,day) for sym,(d,i) in data.items()) if f]) for day in sorted(set(nifty5.ts.dt.date))}
+    days=sorted(set(nifty5.ts.dt.date))
     trades=[]
     for day in days:
         if day.weekday()>=5: continue
-        feats=[]
-        for sym,(d,i) in data.items():
-            f=daily_feat(sym,d,nifty,day)
-            if f and f["above"] and f["rs"]>=50: feats.append(f)
+        feats=[f for f in data_feats.get(day,[]) if f["above"] and f["rs"]>=50]
         packs=[]
         for f in feats:
             i=data[f["sym"]][1]
