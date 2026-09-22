@@ -59,7 +59,7 @@ def load_one(symbol, file_urls):
     # Normalize common column names.
     ren={}
     for c in df.columns:
-        if c in ("timestamp","datetime","date_time","ts"): ren[c]="ts"
+        if c in ("timestamp","datetime","date_time","date","time","ts"): ren[c]="ts"
         elif c in ("open","o"): ren[c]="o"
         elif c in ("high","h"): ren[c]="h"
         elif c in ("low","l"): ren[c]="l"
@@ -67,7 +67,22 @@ def load_one(symbol, file_urls):
         elif c in ("volume","v","vol"): ren[c]="v"
     df=df.rename(columns=ren)
     need={"ts","o","h","l","c","v"}
-    if not need.issubset(df.columns): return None
+    if not need.issubset(df.columns):
+        if isinstance(df.index, pd.MultiIndex) or df.index.name is not None:
+            idx = df.reset_index()
+            idx.columns = [str(x).lower() for x in idx.columns]
+            df = idx
+            ren = {}
+            for col in df.columns:
+                if col in ("timestamp","datetime","date_time","date","time","ts"): ren[col]="ts"
+                elif col in ("open","o"): ren[col]="o"
+                elif col in ("high","h"): ren[col]="h"
+                elif col in ("low","l"): ren[col]="l"
+                elif col in ("close","c"): ren[col]="c"
+                elif col in ("volume","v","vol"): ren[col]="v"
+            df = df.rename(columns=ren)
+        if not need.issubset(df.columns):
+            return None
     if not pd.api.types.is_datetime64_any_dtype(df.ts):
         df.ts=pd.to_datetime(df.ts, errors="coerce")
     if df.ts.dt.tz is None:
@@ -135,7 +150,7 @@ def main():
                 if z:
                     all_trades.extend(backtest_symbol(*z))
             except Exception as e:
-                pass
+                print(f"ERROR {futs[f]}: {type(e).__name__}: {e}")
             if i%25==0: print(f"Processed {i}/{len(futs)} symbols")
     cols=["symbol","entry_ts","entry","exit_ts","exit","reason"]
     t=pd.DataFrame(all_trades,columns=cols)
