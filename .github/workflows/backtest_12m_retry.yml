@@ -4,6 +4,7 @@ on:
   push:
     paths:
       - ".github/workflows/backtest_12m_retry.yml"
+      - "backtest_12m.py"
   workflow_dispatch:
 
 jobs:
