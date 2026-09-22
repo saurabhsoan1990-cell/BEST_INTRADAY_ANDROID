@@ -9,7 +9,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 # Once activated, trail = peak * 0.99. Otherwise force EOD exit.
 # No TOP_INPLAY / ranking / score filter.
 
-START = pd.Timestamp("2025-10-01", tz="Asia/Kolkata")
+# Capital model: one ₹2,00,000 position at a time.\n# After an exit frees capital, the next chronological signal can enter.\nCAPITAL = 200000.0\n\nSTART = pd.Timestamp("2025-10-01", tz="Asia/Kolkata")
 END   = pd.Timestamp("2026-09-30 23:59:59", tz="Asia/Kolkata")
 OUT = "results"
 os.makedirs(OUT, exist_ok=True)
@@ -97,7 +97,9 @@ def load_one(symbol, file_urls):
     return symbol,df
 
 def backtest_symbol(symbol,df):
-    # EMA and rolling volume/high are causal: signal at current close uses prior 20 highs.
+    # Signal logic remains unchanged.
+    # No EOD exit: a position stays open until the trailing stop is hit.
+    # The global ₹2 lakh capital model below decides when the next position can enter.
     df=df.copy()
     df["ema200"]=df["c"].ewm(span=200,adjust=False).mean()
     df["vol_ma20"]=df["v"].rolling(20).mean()
@@ -105,90 +107,117 @@ def backtest_symbol(symbol,df):
     df["signal"]=(df["c"]>df["ema200"])&(df["v"]>5.0*df["vol_ma20"])&(df["c"]>df["prior20h"])
     trades=[]
     pos=None
-    cur_day=None
-    rows=df.itertuples(index=False)
-    for r in rows:
-        day=r.ts.date()
-        if cur_day is not None and day!=cur_day and pos is not None:
-            # force prior-day EOD at last processed price
-            trades.append([symbol,pos["entry_ts"],pos["entry"],r.ts-pd.Timedelta(minutes=1),pos["last"],"EOD"])
-            pos=None
-        cur_day=day
-        # Manage existing position first.
+    for r in df.itertuples(index=False):
         if pos is not None:
-            pos["last"]=r.c
+            pos["last"]=float(r.c)
             if not pos["active"]:
                 if r.h >= pos["entry"]*1.01:
                     pos["active"]=True
-                    pos["peak"]=max(pos["entry"]*1.01,r.h)
-                    # Do not stop on the same candle that activates; subsequent bars trail.
+                    pos["peak"]=max(pos["entry"]*1.01,float(r.h))
             else:
-                pos["peak"]=max(pos["peak"],r.h)
+                pos["peak"]=max(pos["peak"],float(r.h))
                 stop=pos["peak"]*0.99
                 if r.l <= stop:
                     trades.append([symbol,pos["entry_ts"],pos["entry"],r.ts,stop,"TSL"])
                     pos=None
                     continue
-        # One position per stock; enter on signal close.
+
         if pos is None and bool(r.signal):
-            pos={"entry_ts":r.ts,"entry":float(r.c),"active":False,"peak":float(r.c),"last":float(r.c)}
-    if pos is not None:
-        # EOD final bar
-        trades.append([symbol,pos["entry_ts"],pos["entry"],df.iloc[-1].ts,pos["last"],"EOD"])
+            pos={"entry_ts":r.ts,"entry":float(r.c),"active":False,
+                 "peak":float(r.c),"last":float(r.c)}
+
+    # IMPORTANT: no EOD exit. If still open at the end of the data, leave it open.
     return trades
 
 def main():
     file_urls={year:get_repo_files(repo) for year,repo in REPOS}
     syms=sorted(set(file_urls["2025"]) | set(file_urls["2026"]))
     print(f"Found {len(syms)} parquet symbols")
-    all_trades=[]
+
+    # Build exit-defined trade candidates for every symbol first.
+    candidates=[]
     with ThreadPoolExecutor(max_workers=16) as ex:
         futs={ex.submit(load_one,s,file_urls):s for s in syms}
         for i,f in enumerate(as_completed(futs),1):
             try:
                 z=f.result()
                 if z:
-                    all_trades.extend(backtest_symbol(*z))
+                    candidates.extend(backtest_symbol(*z))
             except Exception as e:
                 print(f"ERROR {futs[f]}: {type(e).__name__}: {e}")
             if i%25==0: print(f"Processed {i}/{len(futs)} symbols")
-    cols=["symbol","entry_ts","entry","exit_ts","exit","reason"]
-    t=pd.DataFrame(all_trades,columns=cols)
-    if t.empty:
+
+    if not candidates:
         raise RuntimeError("No trades/data loaded")
-    t["entry_ts"]=pd.to_datetime(t.entry_ts)
-    t["exit_ts"]=pd.to_datetime(t.exit_ts)
+
+    cols=["symbol","entry_ts","entry","exit_ts","exit","reason"]
+    raw=pd.DataFrame(candidates,columns=cols)
+    raw["entry_ts"]=pd.to_datetime(raw.entry_ts)
+    raw["exit_ts"]=pd.to_datetime(raw.exit_ts)
+    raw=raw.sort_values(["entry_ts","symbol"]).reset_index(drop=True)
+
+    # One ₹2 lakh capital pool: no overlap. If capital is occupied, later signals are skipped.
+    accepted=[]
+    capital_free_at=pd.Timestamp.min.tz_localize("Asia/Kolkata")
+    for r in raw.itertuples(index=False):
+        if r.entry_ts >= capital_free_at:
+            accepted.append(r)
+            capital_free_at=r.exit_ts
+
+    t=pd.DataFrame(accepted,columns=cols)
+    if t.empty:
+        raise RuntimeError("No accepted trades after ₹2 lakh capital constraint")
+
     t["pnl_pct"]=(t.exit/t.entry-1)*100
+    t["capital"]=CAPITAL
+    t["pnl_rupees"]=CAPITAL*(t.exit/t.entry-1)
+    t["capital_after"]=CAPITAL + t["pnl_rupees"]
     t["month"]=t.entry_ts.dt.strftime("%Y-%m")
-    # Approximate rupee P&L per ₹1 lakh notional, useful for comparable month-wise output.
-    t["pnl_per_lakh"]=t.pnl_pct*1000
+    t["pnl_per_2l"]=t["pnl_rupees"]
     t.to_csv(f"{OUT}/trades.csv",index=False)
+
     m=t.groupby("month").agg(
         trades=("symbol","size"),
         tsl_exits=("reason",lambda x:(x=="TSL").sum()),
-        eod_exits=("reason",lambda x:(x=="EOD").sum()),
         winners=("pnl_pct",lambda x:(x>0).sum()),
         losers=("pnl_pct",lambda x:(x<=0).sum()),
         pnl_pct=("pnl_pct","sum"),
         avg_trade_pct=("pnl_pct","mean"),
+        pnl_rupees=("pnl_rupees","sum"),
     ).reset_index()
     m["win_pct"]=m.winners/m.trades*100
     m.to_csv(f"{OUT}/monthly.csv",index=False)
+
+    # Sequential compounding of the same ₹2 lakh capital after every completed trade.
+    equity=CAPITAL
+    equity_rows=[]
+    for r in t.itertuples(index=False):
+        equity *= (r.exit/r.entry)
+        equity_rows.append([r.exit_ts,r.symbol,equity])
+    eq=pd.DataFrame(equity_rows,columns=["ts","symbol","equity"])
+    eq.to_csv(f"{OUT}/equity_curve.csv",index=False)
+
+    final_equity=float(eq.iloc[-1].equity)
     summary=pd.DataFrame([{
+        "starting_capital":CAPITAL,
+        "final_equity":final_equity,
+        "net_profit":final_equity-CAPITAL,
+        "return_pct":(final_equity/CAPITAL-1)*100,
         "trades":len(t),
         "winners":int((t.pnl_pct>0).sum()),
         "losers":int((t.pnl_pct<=0).sum()),
         "win_pct":(t.pnl_pct>0).mean()*100,
-        "total_pnl_pct":t.pnl_pct.sum(),
         "avg_trade_pct":t.pnl_pct.mean(),
         "tsl_exits":int((t.reason=="TSL").sum()),
-        "eod_exits":int((t.reason=="EOD").sum()),
+        "eod_exits":0,
     }])
     summary.to_csv(f"{OUT}/summary.csv",index=False)
+
     print("\nMONTHLY RESULT\n")
     print(m.to_string(index=False))
     print("\nSUMMARY\n")
     print(summary.to_string(index=False))
+
 
 if __name__=="__main__":
     main()
