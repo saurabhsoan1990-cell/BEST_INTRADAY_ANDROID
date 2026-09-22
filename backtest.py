@@ -92,10 +92,9 @@ def attach_rs(rows):
 def session_day(df,day):
     return df[df.ts.dt.date==day].copy()
 
-def rvol(sess,hist):
+def rvol_at(sess, hist, last_t):
     if sess.empty: return None
-    last_t=sess.ts.iloc[-1].time()
-    today=float(sess.v.sum())
+    today=float(sess[sess.ts.dt.time<=last_t].v.sum())
     vals=[]
     for h in hist:
         x=h[h.ts.dt.time<=last_t]
@@ -105,58 +104,75 @@ def rvol(sess,hist):
     return today/base if base else None
 
 def vwap(df):
+    if df.empty: return None
     tp=(df.h+df.l+df.c)/3
     return float((tp*df.v).sum()/df.v.sum()) if df.v.sum()>0 else float(df.c.iloc[-1])
 
-def pack(feat, daydf, hist, day):
+def signal_pack(feat, daydf, hist, day, nifty5_day):
     s=session_day(daydf,day)
     if len(s)<5: return None
-    rv=rvol(s,hist)
-    if rv is None: return None
-    px=float(s.c.iloc[-1]); vw=vwap(s); chg=(px/feat["prev"]-1)*100
-    if px<50 or px>20000 or chg>=3.5: return None
     orbars=s[(s.ts.dt.time>=dtime(9,15))&(s.ts.dt.time<dtime(9,30))]
     if len(orbars)<2: return None
     oh=float(orbars.h.max()); ol=float(orbars.l.min())
-    if px<vw or px<oh or float(s.c.iloc[-2])>oh: return None
-    if not (float(s.c.iloc[-2])<=oh<px): return None
-    dh,dl=float(s.h.max()),float(s.l.min())
-    loc=(px-dl)/max(dh-dl,.01)
-    if loc<.55: return None
-    if float(s.c.tail(4).iloc[-1])<float(s.c.tail(4).iloc[0]): return None
-    ext=(px-vw)/feat["atr"]
-    if ext>1.6: return None
-    strong=dl>=feat["prev"]*.995
-    return {"feat":feat,"sess":s,"px":px,"vw":vw,"chg":chg,"rvol":rv,"or_h":oh,"or_l":ol,"day_l":dl,"day_h":dh}
+    prev_close=feat["prev"]
 
-def score(p,rank,n5):
+    # Find the first genuine breakout after the ORB using only candles available
+    # at that moment. No full-day high/low/VWAP/volume is used for the signal.
+    for idx in range(1,len(s)):
+        bar=s.iloc[idx]
+        if bar.ts.time()<dtime(9,30): continue
+        prefix=s.iloc[:idx+1]
+        prior=s.iloc[idx-1]
+        px=float(bar.c)
+        vw=vwap(prefix)
+        rv=rvol_at(prefix,hist,bar.ts.time())
+        if rv is None or vw is None: continue
+        chg=(px/prev_close-1)*100
+        if px<50 or px>20000 or chg>=3.5: continue
+        if px<vw or px<oh: continue
+        if float(prior.c)>oh or px<=oh: continue
+        if not (float(prior.c)<=oh<px): continue
+
+        dh=float(prefix.h.max()); dl=float(prefix.l.min())
+        loc=(px-dl)/max(dh-dl,.01)
+        if loc<.55: continue
+        if float(prefix.c.tail(4).iloc[-1])<float(prefix.c.tail(4).iloc[0]): continue
+        ext=(px-vw)/feat["atr"]
+        if ext>1.6: continue
+
+        ni_start=float(nifty5_day.c.iloc[0]) if not nifty5_day.empty else 0
+        ncut=nifty5_day[nifty5_day.ts<=bar.ts]
+        ni=float(ncut.c.iloc[-1]) if not ncut.empty else ni_start
+        ni_pct=(ni/ni_start-1)*100 if ni_start else 0
+        si=(px/float(prefix.c.iloc[0])-1)*100
+        irs=si-ni_pct
+        strong=dl>=prev_close*.995
+        return {"feat":feat,"sess":prefix,"px":px,"vw":vw,"chg":chg,"rvol":rv,
+                "or_h":oh,"or_l":ol,"day_l":dl,"day_h":dh,"signal_ts":bar.ts,
+                "loc":loc,"ext":ext,"irs":irs,"strong":strong}
+    return None
+
+def score(p,rank):
     f=p["feat"]; px=p["px"]; vw=p["vw"]; chg=p["chg"]
     sc=max(0,22-rank)
     if f["stack"]: sc+=8
     sc+=min(12,max(0,(f["rs"]-50)*.3))
-    if len(n5)>=2:
-        ni=(float(n5.c.iloc[-1])/float(n5.c.iloc[0])-1)*100
-        si=(px/float(p["sess"].c.iloc[0])-1)*100
-        irs=si-ni
-        if irs>.30: sc+=6
-        elif irs<-.30: sc-=4
+    if p["irs"]>.30: sc+=6
+    elif p["irs"]<-.30: sc-=4
     sc+=10
-    if p["day_l"]>=f["prev"]*.995: sc+=8
-    loc=(px-p["day_l"])/max(p["day_h"]-p["day_l"],.01)
-    if loc>=.8: sc+=8
+    if p["strong"]: sc+=8
+    if p["loc"]>=.8: sc+=8
     if .3<=chg<=2.2: sc+=10
     elif -.3<=chg<.3: sc+=6
-    ext=(px-vw)/f["atr"]
-    if .15<=ext<=.9: sc+=6
+    if .15<=p["ext"]<=.9: sc+=6
     if sc<MIN_SCORE: return None
     orw=p["or_h"]-p["or_l"]
     t1=min(px+orw,px*1.012); t2=min(px+1.5*orw,px*1.018)
     band=max(p["or_l"],min(vw,(p["day_l"]+vw)/2))
-    return {"sym":f["sym"],"entry":px,"score":round(sc,1),"rvol":p["rvol"],"t1":t1,"t2":t2,"band":band}
+    return {"sym":f["sym"],"entry":px,"score":round(sc,1),"rvol":p["rvol"],
+            "t1":t1,"t2":t2,"band":band,"signal_ts":p["signal_ts"]}
 
 def simulate(pick, future, entry_ts):
-    # Conservative bar execution: stop/band first, then targets. If target and stop
-    # occur in the same 5-min bar, count the adverse exit first.
     entry=pick["entry"]; t1=pick["t1"]; t2=pick["t2"]; band=pick["band"]
     for _,b in future.iterrows():
         ts=b.ts
@@ -164,7 +180,6 @@ def simulate(pick, future, entry_ts):
         if b.l<=band: return band-entry, "band"
         if b.h>=t2: return t2-entry, "T2"
         if b.h>=t1: return t1-entry, "T1"
-        # 20 minutes = four 5-min bars
         if ts >= entry_ts + pd.Timedelta(minutes=20):
             return float(b.c)-entry, "20m"
     return float(future.c.iloc[-1])-entry, "EOD"
@@ -202,24 +217,27 @@ def main():
         if day.weekday()>=5: continue
         feats=[f for f in data_feats.get(day,[]) if f["above"] and f["rs"]>=50]
         packs=[]
+        n5=session_day(nifty5,day)
         for f in feats:
             i=data[f["sym"]][1]
             hist=[i[i.ts.dt.date==x].copy() for x in sorted(set(i.ts.dt.date)) if x<day]
             hist=[x for x in hist if len(x)>=50][-20:]
-            p=pack(f,i,hist,day)
+            p=signal_pack(f,i,hist,day,n5)
             if p: packs.append(p)
+        # Preserve the strategy's rank component, but rank only signals that
+        # actually existed at their real signal time.
         packs.sort(key=lambda x:x["rvol"],reverse=True)
-        n5=session_day(nifty5,day)
         scored=[]
         for rank,p in enumerate(packs[:TOP_INPLAY],1):
-            q=score(p,rank,n5)
+            q=score(p,rank)
             if q: scored.append(q)
         scored=sorted(scored,key=lambda x:x["score"],reverse=True)[:MAX_PICKS]
         for q in scored:
-            s=data[q["sym"]][1]; fut=s[(s.ts.dt.date==day)&(s.ts>=(s.ts[s.ts.dt.time>=dtime(9,30)].iloc[0] if not s[s.ts.dt.time>=dtime(9,30)].empty else s.ts.iloc[0]))]
+            s=data[q["sym"]][1]
+            fut=s[(s.ts.dt.date==day)&(s.ts>q["signal_ts"])]
             if fut.empty: continue
-            entry_ts=fut.ts.iloc[0]
-            pnl,reason=simulate(q,fut.iloc[1:],entry_ts)
+            entry_ts=q["signal_ts"]
+            pnl,reason=simulate(q,fut,entry_ts)
             qty=max(1,int(CAPITAL//q["entry"]))
             gross=pnl*qty
             # Approximate retail cash-equity costs; exact broker plan can be substituted later.
