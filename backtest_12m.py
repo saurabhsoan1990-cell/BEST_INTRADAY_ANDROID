@@ -19,6 +19,17 @@ REPOS = [
     ("2026", "https://github.com/ganeshbiyer/Nse_Historical_Data_2026.git"),
 ]
 
+def get_repo_files(repo):
+    """Return {SYMBOL: fresh GitHub download URL} from the repo directory listing."""
+    api=f"https://api.github.com/repos/{repo}/contents"
+    r=requests.get(api, timeout=30, headers={"Accept":"application/vnd.github+json"})
+    r.raise_for_status()
+    data=r.json()
+    if not isinstance(data, list):
+        raise RuntimeError(f"Unexpected GitHub contents response for {repo}")
+    return {x["name"][:-8]: x["download_url"] for x in data
+            if x.get("type")=="file" and x.get("name","").endswith(".parquet") and x.get("download_url")}
+
 def get_symbols():
     # Use the repository's Nifty-500 symbol list; fall back to parquet names.
     url="https://raw.githubusercontent.com/ganeshbiyer/Nse_Historical_Data/main/nifty500_symbols.csv"
@@ -30,14 +41,14 @@ def get_symbols():
     except Exception:
         return []
 
-def load_one(symbol):
+def load_one(symbol, file_urls):
     frames=[]
     for year, repo in REPOS:
-        # Raw GitHub files are fetched per symbol; missing files are skipped.
-        u=f"https://raw.githubusercontent.com/ganeshbiyer/Nse_Historical_Data{('_2026' if year=='2026' else '')}/main/{symbol}.parquet"
+        u=file_urls.get(year, {}).get(symbol)
+        if not u: continue
         try:
             r=requests.get(u, timeout=90)
-            if r.status_code != 200: continue
+            r.raise_for_status()
             df=pd.read_parquet(io.BytesIO(r.content))
             frames.append(df)
         except Exception:
@@ -112,15 +123,12 @@ def backtest_symbol(symbol,df):
     return trades
 
 def main():
-    syms=get_symbols()
-    if not syms:
-        # Use 2026 repo directory listing via GitHub API if symbol CSV unavailable.
-        api="https://api.github.com/repos/ganeshbiyer/Nse_Historical_Data_2026/contents"
-        data=requests.get(api,timeout=30).json()
-        syms=sorted({x["name"][:-8] for x in data if x.get("name","").endswith(".parquet")})
+    file_urls={year:get_repo_files(repo) for year,repo in REPOS}
+    syms=sorted(set(file_urls["2025"]) | set(file_urls["2026"]))
+    print(f"Found {len(syms)} parquet symbols")
     all_trades=[]
     with ThreadPoolExecutor(max_workers=16) as ex:
-        futs={ex.submit(load_one,s):s for s in syms}
+        futs={ex.submit(load_one,s,file_urls):s for s in syms}
         for i,f in enumerate(as_completed(futs),1):
             try:
                 z=f.result()
