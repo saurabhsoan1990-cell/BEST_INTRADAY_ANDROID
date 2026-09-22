@@ -13,7 +13,7 @@ from urllib3.util.retry import Retry
 TOKEN = os.environ["UPSTOX_ACCESS_TOKEN"].strip()
 CAPITAL = float(os.getenv("DO_CAPITAL", "200000"))
 FOCUS_DATE = os.getenv("FOCUS_DATE", "").strip()
-MAX_PICKS = 2
+MAX_PICKS = None  # unlimited signals; every qualifying stock can trigger
 MIN_SCORE = 50.0
 TOP_INPLAY = 20
 NIFTY_KEY = "NSE_INDEX|Nifty 50"
@@ -237,10 +237,10 @@ def main():
             q=score(p,rank)
             if q: scored.append(q)
         scored=sorted(scored,key=lambda x:x["score"],reverse=True)
-        selected={q["sym"] for q in scored[:MAX_PICKS]}
+        selected={q["sym"] for q in scored}  # no daily top-N cap
         for q in scored:
             signal_log.append({"date":str(day),"signal_time":q["signal_ts"].strftime("%H:%M:%S"),"symbol":q["sym"],"score":q["score"],"rvol":q["rvol"],"selected":q["sym"] in selected})
-        scored=scored[:MAX_PICKS]
+        # Do not truncate: every scored qualifying signal is tradable.
         for q in scored:
             s=data[q["sym"]][1]
             fut=s[(s.ts.dt.date==day)&(s.ts>q["signal_ts"])]
