@@ -14,7 +14,7 @@ TOKEN = os.environ["UPSTOX_ACCESS_TOKEN"].strip()
 CAPITAL = float(os.getenv("DO_CAPITAL", "200000"))
 FOCUS_DATE = os.getenv("FOCUS_DATE", "").strip()
 MAX_PICKS = None  # unlimited signals; every qualifying stock can trigger
-MIN_SCORE = 50.0
+MIN_SCORE = 80.0
 NIFTY_KEY = "NSE_INDEX|Nifty 50"
 IST = "Asia/Kolkata"
 OUT = "backtest_results"
@@ -176,12 +176,11 @@ def simulate(pick, future, entry_ts):
     entry=pick["entry"]; t1=pick["t1"]; t2=pick["t2"]; band=pick["band"]
     for _,b in future.iterrows():
         ts=b.ts
-        if ts.time()>dtime(15,10): return float(b.c)-entry, "3:10", ts
-        if b.l<=band: return band-entry, "band", ts
+        # Exit only by target or stop-loss. No 20-minute/time-based exit.
+        if b.l<=band: return band-entry, "SL", ts
         if b.h>=t2: return t2-entry, "T2", ts
         if b.h>=t1: return t1-entry, "T1", ts
-        if ts >= entry_ts + pd.Timedelta(minutes=20):
-            return float(b.c)-entry, "20m", ts
+    # If neither target nor SL is hit by session end, close at EOD.
     return float(future.c.iloc[-1])-entry, "EOD", future.ts.iloc[-1]
 
 def main():
