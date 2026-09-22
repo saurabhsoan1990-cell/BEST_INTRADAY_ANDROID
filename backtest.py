@@ -14,7 +14,7 @@ TOKEN = os.environ["UPSTOX_ACCESS_TOKEN"].strip()
 CAPITAL = float(os.getenv("DO_CAPITAL", "200000"))
 FOCUS_DATE = os.getenv("FOCUS_DATE", "").strip()
 MAX_PICKS = None  # unlimited signals; every qualifying stock can trigger
-MIN_SCORE = 80.0
+MIN_SCORE = 0.0  # diagnostic run: log the full raw score distribution
 NIFTY_KEY = "NSE_INDEX|Nifty 50"
 IST = "Asia/Kolkata"
 OUT = "backtest_results"
@@ -216,6 +216,7 @@ def main():
         days=[end] if end in days else []
     trades=[]
     signal_log=[]
+    score_buckets={"<50":0,"50-59":0,"60-69":0,"70-79":0,"80+":0}
     for day in days:
         if day.weekday()>=5: continue
         feats=[f for f in data_feats.get(day,[]) if f["above"] and f["rs"]>=50]
@@ -232,7 +233,13 @@ def main():
         scored=[]
         for p in packs:
             q=score(p)
-            if q: scored.append(q)
+            if q:
+                if q["score"] < 50: score_buckets["<50"] += 1
+                elif q["score"] < 60: score_buckets["50-59"] += 1
+                elif q["score"] < 70: score_buckets["60-69"] += 1
+                elif q["score"] < 80: score_buckets["70-79"] += 1
+                else: score_buckets["80+"] += 1
+                scored.append(q)
         scored=sorted(scored,key=lambda x:x["score"],reverse=True)
         selected={q["sym"] for q in scored}  # no daily top-N cap
         for q in scored:
@@ -275,6 +282,7 @@ def main():
             if x<=0: streak+=1; best=max(best,streak)
             else: streak=0
         summary["max_consecutive_losses"]=best
+    summary["score_buckets"]=score_buckets
     with open(f"{OUT}/summary.json","w") as f: json.dump(summary,f,indent=2)
     print(json.dumps(summary,indent=2))
 if __name__=="__main__": main()
