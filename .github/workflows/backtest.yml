@@ -27,7 +27,6 @@ jobs:
         env:
           UPSTOX_ACCESS_TOKEN: ${{ secrets.UPSTOX_ACCESS_TOKEN }}
           DO_CAPITAL: 200000
-          FOCUS_DATE: "2026-09-04"
         run: python backtest.py
 
       - name: Upload backtest results
