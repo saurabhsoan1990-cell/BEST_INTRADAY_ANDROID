@@ -59,8 +59,13 @@ def simulate(i,day,sig):
  pre=i[i.ts<=sig["ts"]].c; fut=i[(i.ts.dt.date==day)&(i.ts>sig["ts"])].copy()
  if fut.empty:return None
  rr=rsi(pd.concat([pre,fut.c],ignore_index=True)).iloc[-len(fut):].to_numpy()
+ peak=float(sig["entry"]); trail=peak*0.99
  for z,(idx,b) in enumerate(fut.iterrows()):
   if rr[z]>=70:return float(b.c),"RSI70",b.ts
+  if float(b.h)>peak:
+   peak=float(b.h); trail=peak*0.99
+  if float(b.l)<=trail:
+   return float(trail),"TSL1",b.ts
  return float(fut.c.iloc[-1]),"EOD",fut.ts.iloc[-1]
 def main():
  end=date.fromisoformat(FOCUS_DATE) if FOCUS_DATE else date.today()-timedelta(days=1); start=end-timedelta(days=31); ds=end-timedelta(days=180)
