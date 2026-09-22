@@ -12,6 +12,7 @@ from urllib3.util.retry import Retry
 
 TOKEN = os.environ["UPSTOX_ACCESS_TOKEN"].strip()
 CAPITAL = float(os.getenv("DO_CAPITAL", "200000"))
+FOCUS_DATE = os.getenv("FOCUS_DATE", "").strip()
 MAX_PICKS = 2
 MIN_SCORE = 50.0
 TOP_INPLAY = 20
@@ -176,18 +177,18 @@ def simulate(pick, future, entry_ts):
     entry=pick["entry"]; t1=pick["t1"]; t2=pick["t2"]; band=pick["band"]
     for _,b in future.iterrows():
         ts=b.ts
-        if ts.time()>dtime(15,10): return float(b.c)-entry, "3:10"
-        if b.l<=band: return band-entry, "band"
-        if b.h>=t2: return t2-entry, "T2"
-        if b.h>=t1: return t1-entry, "T1"
+        if ts.time()>dtime(15,10): return float(b.c)-entry, "3:10", ts
+        if b.l<=band: return band-entry, "band", ts
+        if b.h>=t2: return t2-entry, "T2", ts
+        if b.h>=t1: return t1-entry, "T1", ts
         if ts >= entry_ts + pd.Timedelta(minutes=20):
-            return float(b.c)-entry, "20m"
-    return float(future.c.iloc[-1])-entry, "EOD"
+            return float(b.c)-entry, "20m", ts
+    return float(future.c.iloc[-1])-entry, "EOD", future.ts.iloc[-1]
 
 def main():
     today=date.today()
-    end=today-timedelta(days=1)
-    start=end-timedelta(days=31)
+    end=(date.fromisoformat(FOCUS_DATE) if FOCUS_DATE else today-timedelta(days=1))
+    start=end if FOCUS_DATE else end-timedelta(days=31)
     daily_start=end-timedelta(days=140)
     print(f"BACKTEST {start} -> {end}")
     syms=nifty500()
@@ -213,6 +214,7 @@ def main():
     data_feats={day: attach_rs([f for f in (daily_feat(sym,d,nifty,day) for sym,(d,i) in data.items()) if f]) for day in sorted(set(nifty5.ts.dt.date))}
     days=sorted(set(nifty5.ts.dt.date))
     trades=[]
+    signal_log=[]
     for day in days:
         if day.weekday()>=5: continue
         feats=[f for f in data_feats.get(day,[]) if f["above"] and f["rs"]>=50]
@@ -231,24 +233,29 @@ def main():
         for rank,p in enumerate(packs[:TOP_INPLAY],1):
             q=score(p,rank)
             if q: scored.append(q)
-        scored=sorted(scored,key=lambda x:x["score"],reverse=True)[:MAX_PICKS]
+        scored=sorted(scored,key=lambda x:x["score"],reverse=True)
+        selected={q["sym"] for q in scored[:MAX_PICKS]}
+        for q in scored:
+            signal_log.append({"date":str(day),"signal_time":q["signal_ts"].strftime("%H:%M:%S"),"symbol":q["sym"],"score":q["score"],"rvol":q["rvol"],"selected":q["sym"] in selected})
+        scored=scored[:MAX_PICKS]
         for q in scored:
             s=data[q["sym"]][1]
             fut=s[(s.ts.dt.date==day)&(s.ts>q["signal_ts"])]
             if fut.empty: continue
             entry_ts=q["signal_ts"]
-            pnl,reason=simulate(q,fut,entry_ts)
+            pnl,reason,exit_ts=simulate(q,fut,entry_ts)
             qty=max(1,int(CAPITAL//q["entry"]))
             gross=pnl*qty
             # Approximate retail cash-equity costs; exact broker plan can be substituted later.
             turnover=(q["entry"]+q["entry"]+pnl)*qty
             charges=max(0.0,turnover*0.00035)
             net=gross-charges
-            trades.append({"date":str(day),"symbol":q["sym"],"entry":q["entry"],"exit":q["entry"]+pnl,
+            trades.append({"date":str(day),"signal_time":q["signal_ts"].strftime("%H:%M:%S"),"exit_time":exit_ts.strftime("%H:%M:%S"),"symbol":q["sym"],"entry":q["entry"],"exit":q["entry"]+pnl,
                            "qty":qty,"gross_pnl":gross,"charges_est":charges,"net_pnl":net,
                            "score":q["score"],"rvol":q["rvol"],"reason":reason})
     df=pd.DataFrame(trades)
     df.to_csv(f"{OUT}/trades.csv",index=False)
+    pd.DataFrame(signal_log).to_csv(f"{OUT}/signals.csv",index=False)
     if df.empty:
         summary={"trades":0}
     else:
