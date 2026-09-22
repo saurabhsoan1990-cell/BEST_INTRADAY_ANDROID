@@ -188,7 +188,8 @@ def simulate(pick, future, entry_ts):
 def main():
     today=date.today()
     end=(date.fromisoformat(FOCUS_DATE) if FOCUS_DATE else today-timedelta(days=1))
-    start=end if FOCUS_DATE else end-timedelta(days=31)
+    # Always fetch a normal intraday window; when focused, process only the requested day.
+    start=end-timedelta(days=31)
     daily_start=end-timedelta(days=140)
     print(f"BACKTEST {start} -> {end}")
     syms=nifty500()
@@ -213,6 +214,8 @@ def main():
             if j%50==0: print("loaded",j)
     data_feats={day: attach_rs([f for f in (daily_feat(sym,d,nifty,day) for sym,(d,i) in data.items()) if f]) for day in sorted(set(nifty5.ts.dt.date))}
     days=sorted(set(nifty5.ts.dt.date))
+    if FOCUS_DATE:
+        days=[end] if end in days else []
     trades=[]
     signal_log=[]
     for day in days:
