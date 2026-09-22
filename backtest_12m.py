@@ -15,8 +15,8 @@ OUT = "results"
 os.makedirs(OUT, exist_ok=True)
 
 REPOS = [
-    ("2025", "https://github.com/ganeshbiyer/Nse_Historical_Data.git"),
-    ("2026", "https://github.com/ganeshbiyer/Nse_Historical_Data_2026.git"),
+    ("2025", "ganeshbiyer/Nse_Historical_Data"),
+    ("2026", "ganeshbiyer/Nse_Historical_Data_2026"),
 ]
 
 def get_repo_files(repo):
