@@ -11,8 +11,8 @@ android {
         applicationId = "com.bestintraday"
         minSdk = 24
         targetSdk = 33
-        versionCode = 3
-        versionName = "3.0"
+        versionCode = 4
+        versionName = "4.0-ZERODHA-ONLY"
 
         ndk {
             abiFilters += listOf("arm64-v8a", "x86_64")
