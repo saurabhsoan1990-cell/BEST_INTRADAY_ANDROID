@@ -2,11 +2,10 @@ import os, io, requests
 import pandas as pd
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-CAPITAL = 200000.0
+CAPITAL = 5000000.0
 START = pd.Timestamp("2025-10-01", tz="Asia/Kolkata")
 END = pd.Timestamp("2026-09-30 23:59:59", tz="Asia/Kolkata")
 OUT = "results"
-os.makedirs(OUT, exist_ok=True)
 REPOS = [("2025", "ganeshbiyer/Nse_Historical_Data"), ("2026", "ganeshbiyer/Nse_Historical_Data_2026")]
 
 # No EOD exit. TSL activates after +1% and trails 0.4% below the peak.
@@ -17,7 +16,6 @@ TSL_TRAIL = 0.004
 # - RSI must be above 50 and rising for 3 completed 15m bars.
 # - A recent 3-bar RSI bottom must have been <= 40.
 # - Current RSI must have recovered at least 2 RSI points from that bottom.
-# This converts "trend up + just made a bottom and is turning up" into an objective rule.
 RSI_LENGTH = 14
 RSI_BOTTOM_LEVEL = 40.0
 RSI_TREND_LEVEL = 50.0
@@ -89,7 +87,6 @@ def load_one(symbol, file_urls):
 
 
 def add_15m_rsi_filter(df):
-    """Attach only completed 15-minute RSI confirmation to the base bars."""
     x = df.set_index("ts")[["o", "h", "l", "c", "v"]]
     bars = x.resample("15min", offset="9h15min", label="right", closed="right").agg(
         {"o": "first", "h": "max", "l": "min", "c": "last", "v": "sum"}
@@ -115,7 +112,6 @@ def add_15m_rsi_filter(df):
 
     rsi_frame = bars[["rsi14", "rsi_ok"]].reset_index().sort_values("ts")
     base = df.sort_values("ts").copy()
-    # Only completed 15m bars are allowed: latest RSI timestamp must be <= base timestamp.
     base = pd.merge_asof(base, rsi_frame, on="ts", direction="backward")
     base["rsi_ok"] = base["rsi_ok"].fillna(False).astype(bool)
     return base
@@ -148,7 +144,6 @@ def backtest_symbol(symbol, df):
         if pos is None and bool(r.signal):
             pos = {"entry_ts": r.ts, "entry": float(r.c), "active": False, "peak": float(r.c)}
 
-    # Deliberately NO EOD exit. Open positions remain open through the backtest end.
     return trades
 
 
@@ -186,7 +181,7 @@ def main():
 
     t = pd.DataFrame(accepted, columns=cols)
     if t.empty:
-        raise RuntimeError("No accepted trades after ₹2 lakh capital constraint")
+        raise RuntimeError("No accepted trades after ₹50 lakh capital constraint")
     t["pnl_pct"] = (t.exit / t.entry - 1) * 100
     t["capital"] = CAPITAL
     t["pnl_rupees"] = CAPITAL * (t.exit / t.entry - 1)
