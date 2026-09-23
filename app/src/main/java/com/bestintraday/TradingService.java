@@ -3,18 +3,16 @@ package com.bestintraday;
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
-import android.app.PendingIntent;
 import android.app.Service;
+import android.app.PendingIntent;
 import android.content.Intent;
 import android.os.Build;
 import android.os.IBinder;
 
 import com.chaquo.python.PyObject;
 import com.chaquo.python.Python;
-
 import org.json.JSONArray;
 import org.json.JSONObject;
-
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -35,11 +33,7 @@ public class TradingService extends Service {
 
     @Override public int onStartCommand(Intent intent, int flags, int startId) {
         if (intent != null && ACTION_STOP.equals(intent.getAction())) {
-            started = false;
-            stopEngine();
-            stopForeground(STOP_FOREGROUND_REMOVE);
-            stopSelf();
-            return START_NOT_STICKY;
+            started = false; stopEngine(); stopForeground(STOP_FOREGROUND_REMOVE); stopSelf(); return START_NOT_STICKY;
         }
         if (intent != null && ACTION_START.equals(intent.getAction())) {
             String apiKey = intent.getStringExtra(EXTRA_API_KEY);
@@ -55,8 +49,7 @@ public class TradingService extends Service {
 
     private void startEngine(String apiKey, String accessToken, boolean live, double total, double position) {
         try {
-            Python py = Python.getInstance();
-            PyObject bridge = py.getModule("scanner_bridge");
+            PyObject bridge = Python.getInstance().getModule("scanner_bridge");
             bridge.callAttr("start_engine", apiKey, accessToken, live, total, position);
             started = true;
             updateNotification("Running " + (live ? "LIVE" : "MANUAL") + " • 6× volume • ₹" + money(total) + " / ₹" + money(position));
@@ -71,8 +64,7 @@ public class TradingService extends Service {
         while (started) {
             try {
                 Thread.sleep(5000L);
-                String json = bridge.callAttr("snapshot").toString();
-                JSONObject root = new JSONObject(json);
+                JSONObject root = new JSONObject(bridge.callAttr("snapshot").toString());
                 JSONArray events = root.optJSONArray("events");
                 if (events != null && events.length() > 0) {
                     JSONObject e = events.getJSONObject(0);
@@ -91,10 +83,7 @@ public class TradingService extends Service {
     }
 
     private void stopEngine() {
-        executor.execute(() -> {
-            try { Python.getInstance().getModule("scanner_bridge").callAttr("stop_engine"); }
-            catch (Exception ignored) {}
-        });
+        executor.execute(() -> { try { Python.getInstance().getModule("scanner_bridge").callAttr("stop_engine"); } catch (Exception ignored) {} });
     }
 
     private Notification buildNotification(String text) {
@@ -127,12 +116,7 @@ public class TradingService extends Service {
     private static String money(double x) { return String.format(java.util.Locale.US, "%.0f", x); }
     private static String shortText(String s, int n) { return s.length() <= n ? s : s.substring(0, n); }
 
-    @Override public void onDestroy() {
-        started = false;
-        stopEngine();
-        executor.shutdownNow();
-        super.onDestroy();
-    }
-
+    @Override public void onTimeout(int startId) { started = false; stopEngine(); stopForeground(STOP_FOREGROUND_REMOVE); stopSelf(); }
+    @Override public void onDestroy() { started = false; stopEngine(); executor.shutdownNow(); super.onDestroy(); }
     @Override public IBinder onBind(Intent intent) { return null; }
 }
