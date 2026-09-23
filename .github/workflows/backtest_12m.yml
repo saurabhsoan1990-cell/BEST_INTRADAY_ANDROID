@@ -1,4 +1,4 @@
-name: 12M ₹2L Sequential Backtest
+name: 12M ₹2L Volume Strength Tests
 
 on:
   workflow_dispatch:
@@ -11,6 +11,10 @@ jobs:
   backtest:
     runs-on: ubuntu-latest
     timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        volume_multiplier: [7, 10]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -18,12 +22,17 @@ jobs:
           python-version: "3.12"
       - name: Install dependencies
         run: pip install pandas pyarrow requests
-      - name: Run 12M ₹2L backtest
-        run: python backtest_12m.py
+      - name: Run volume strength backtest
+        env:
+          VOLUME_MULTIPLIER: ${{ matrix.volume_multiplier }}
+        run: |
+          M=${VOLUME_MULTIPLIER}
+          sed "s/5.0\*df.vol_ma20/${M}.0*df.vol_ma20/; s/OUT = \"results\"/OUT = \"results_${M}x\"/" backtest_12m.py > backtest_${M}x.py
+          python backtest_${M}x.py
       - name: Upload results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: backtest-12m-2l-results
-          path: results/
+          name: backtest-12m-2l-${{ matrix.volume_multiplier }}x-results
+          path: results_${{ matrix.volume_multiplier }}x/
           if-no-files-found: warn
