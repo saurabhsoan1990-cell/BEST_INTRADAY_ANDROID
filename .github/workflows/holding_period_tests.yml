@@ -1,0 +1,35 @@
+name: Holding Period Tests
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "backtest_holding.py"
+      - ".github/workflows/holding_period_tests.yml"
+
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        hold_days: [1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: pip install pandas pyarrow requests
+      - name: Run holding period backtest
+        env:
+          HOLD_DAYS: ${{ matrix.hold_days }}
+        run: python backtest_holding.py
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: holding-${{ matrix.hold_days }}d-results
+          path: results_holding_${{ matrix.hold_days }}d/
+          if-no-files-found: warn
