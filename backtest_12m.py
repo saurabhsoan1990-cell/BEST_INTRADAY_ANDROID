@@ -9,6 +9,10 @@ OUT = "results"
 os.makedirs(OUT, exist_ok=True)
 REPOS = [("2025", "ganeshbiyer/Nse_Historical_Data"), ("2026", "ganeshbiyer/Nse_Historical_Data_2026")]
 
+# TSL: activates after +1% profit; trail is 0.4% below peak. No loss-side stop, no EOD exit.
+TSL_ACTIVATION = 0.01
+TSL_TRAIL = 0.004
+
 def get_repo_files(repo):
     api=f"https://api.github.com/repos/{repo}/contents"
     r=requests.get(api, timeout=30, headers={"Accept":"application/vnd.github+json"}); r.raise_for_status()
@@ -64,9 +68,9 @@ def backtest_symbol(symbol, df):
     for r in df.itertuples(index=False):
         if pos is not None:
             if not pos["active"]:
-                if r.h >= pos["entry"]*1.01: pos["active"]=True; pos["peak"]=max(pos["entry"]*1.01,float(r.h))
+                if r.h >= pos["entry"]*(1+TSL_ACTIVATION): pos["active"]=True; pos["peak"]=max(pos["entry"]*(1+TSL_ACTIVATION),float(r.h))
             else:
-                pos["peak"]=max(pos["peak"],float(r.h)); stop=pos["peak"]*0.99
+                pos["peak"]=max(pos["peak"],float(r.h)); stop=pos["peak"]*(1-TSL_TRAIL)
                 if r.l <= stop:
                     trades.append([symbol,pos["entry_ts"],pos["entry"],r.ts,stop,"TSL"]); pos=None; continue
         if pos is None and bool(r.signal): pos={"entry_ts":r.ts,"entry":float(r.c),"active":False,"peak":float(r.c)}
