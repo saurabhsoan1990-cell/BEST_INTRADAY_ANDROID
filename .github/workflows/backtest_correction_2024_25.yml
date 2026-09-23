@@ -1,0 +1,27 @@
+name: Correction Regime 2024-25 Backtest
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "backtest_correction_2024_25.py"
+      - ".github/workflows/backtest_correction_2024_25.yml"
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: pip install pandas pyarrow requests
+      - name: Run correction-regime backtest
+        run: python backtest_correction_2024_25.py
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backtest-correction-2024-25-results
+          path: results_correction_2024_25/
+          if-no-files-found: warn
