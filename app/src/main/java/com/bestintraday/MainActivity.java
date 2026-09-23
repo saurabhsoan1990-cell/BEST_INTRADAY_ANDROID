@@ -5,8 +5,10 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.graphics.Typeface;
+import android.text.InputType;
 import android.view.View;
 import android.widget.Button;
+import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
@@ -18,35 +20,30 @@ import com.chaquo.python.Python;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
-import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 public class MainActivity extends Activity {
-    private EditText capitalInput;
-    private EditText tokenInput;
+    private EditText apiKeyInput;
+    private EditText accessTokenInput;
+    private CheckBox liveCheck;
     private TextView status;
     private TextView output;
     private Button startButton;
     private Button stopButton;
-
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
     private boolean running = false;
 
-    // Original scanner default is 600 seconds.
-    private static final long CYCLE_MS = 10 * 60 * 1000L;
-
-    private final Runnable scheduledScan = new Runnable() {
+    private final Runnable refresh = new Runnable() {
         @Override public void run() {
             if (!running) return;
-            runScan();
-            handler.postDelayed(this, CYCLE_MS);
+            snapshot();
+            handler.postDelayed(this, 2000L);
         }
     };
 
-    @Override
-    protected void onCreate(Bundle savedInstanceState) {
+    @Override protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         buildUi();
     }
@@ -57,50 +54,51 @@ public class MainActivity extends Activity {
         box.setPadding(28, 28, 28, 28);
 
         TextView title = new TextView(this);
-        title.setText("BEST INTRADAY");
-        title.setTextSize(24);
+        title.setText("BEST INTRADAY • ZERODHA");
+        title.setTextSize(23);
         title.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         box.addView(title);
 
-        TextView subtitle = new TextView(this);
-        subtitle.setText("TRUE same-time RVOL • Max 2 picks");
-        subtitle.setTextSize(14);
-        box.addView(subtitle);
+        TextView rules = new TextView(this);
+        rules.setText("₹50L total • ₹2L/stock • max 25 positions\nEMA200 + breakout + volume ≥ 5× previous 20-bar average\n1% activation • 1% TSL • NO EOD EXIT");
+        rules.setTextSize(14);
+        box.addView(rules);
 
-        capitalInput = new EditText(this);
-        capitalInput.setHint("Capital (₹)");
-        capitalInput.setText("200000");
-        capitalInput.setInputType(2 | 8192);
-        box.addView(capitalInput);
+        apiKeyInput = new EditText(this);
+        apiKeyInput.setHint("Zerodha Kite API Key");
+        apiKeyInput.setSingleLine(true);
+        box.addView(apiKeyInput);
 
-        tokenInput = new EditText(this);
-        tokenInput.setHint("Upstox Access Token");
-        tokenInput.setSingleLine(true);
-        box.addView(tokenInput);
+        accessTokenInput = new EditText(this);
+        accessTokenInput.setHint("Zerodha daily Access Token");
+        accessTokenInput.setSingleLine(true);
+        accessTokenInput.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        box.addView(accessTokenInput);
+
+        liveCheck = new CheckBox(this);
+        liveCheck.setText("LIVE ORDER MODE — unchecked = PAPER");
+        liveCheck.setChecked(false);
+        box.addView(liveCheck);
 
         LinearLayout buttons = new LinearLayout(this);
-        buttons.setOrientation(LinearLayout.HORIZONTAL);
-
         startButton = new Button(this);
         startButton.setText("START");
-        startButton.setOnClickListener(v -> startScanner());
-
+        startButton.setOnClickListener(v -> startEngine());
         stopButton = new Button(this);
         stopButton.setText("STOP");
         stopButton.setEnabled(false);
-        stopButton.setOnClickListener(v -> stopScanner());
-
+        stopButton.setOnClickListener(v -> stopEngine());
         buttons.addView(startButton, new LinearLayout.LayoutParams(0, -2, 1));
         buttons.addView(stopButton, new LinearLayout.LayoutParams(0, -2, 1));
         box.addView(buttons);
 
         status = new TextView(this);
-        status.setText("Ready");
+        status.setText("READY — PAPER MODE");
         status.setTextSize(16);
         box.addView(status);
 
         output = new TextView(this);
-        output.setTextSize(15);
+        output.setTextSize(14);
         output.setTextIsSelectable(true);
         box.addView(output);
 
@@ -109,39 +107,70 @@ public class MainActivity extends Activity {
         setContentView(scroll);
     }
 
-    private void startScanner() {
-        running = true;
+    private void startEngine() {
+        final String key = apiKeyInput.getText().toString().trim();
+        final String token = accessTokenInput.getText().toString().trim();
+        final boolean live = liveCheck.isChecked();
+        if (key.isEmpty() || token.isEmpty()) {
+            status.setText("ERROR: API key and access token required");
+            return;
+        }
+        if (live) {
+            status.setText("LIVE MODE — starting only after credentials/connectivity checks");
+        } else {
+            status.setText("PAPER MODE — warming up");
+        }
         startButton.setEnabled(false);
         stopButton.setEnabled(true);
-        status.setText("Scanning...");
-        runScan();
-        handler.removeCallbacks(scheduledScan);
-        handler.postDelayed(scheduledScan, CYCLE_MS);
-    }
-
-    private void stopScanner() {
-        running = false;
-        handler.removeCallbacks(scheduledScan);
-        startButton.setEnabled(true);
-        stopButton.setEnabled(false);
-        status.setText("Stopped");
-    }
-
-    private void runScan() {
-        final String capital = capitalInput.getText().toString().trim();
-        final String token = tokenInput.getText().toString().trim();
-
+        running = true;
         executor.execute(() -> {
             try {
                 Python py = Python.getInstance();
                 PyObject bridge = py.getModule("scanner_bridge");
-                String json = bridge.callAttr("scan_once", capital, token).toString();
-                runOnUiThread(() -> render(json));
+                String result = bridge.callAttr("start_engine", key, token, live).toString();
+                runOnUiThread(() -> {
+                    status.setText(result);
+                    handler.removeCallbacks(refresh);
+                    handler.post(refresh);
+                });
             } catch (Exception e) {
                 runOnUiThread(() -> {
-                    status.setText("ERROR");
+                    status.setText("START ERROR");
                     output.setText(e.toString());
+                    running = false;
+                    startButton.setEnabled(true);
+                    stopButton.setEnabled(false);
                 });
+            }
+        });
+    }
+
+    private void stopEngine() {
+        running = false;
+        handler.removeCallbacks(refresh);
+        executor.execute(() -> {
+            try {
+                Python py = Python.getInstance();
+                PyObject bridge = py.getModule("scanner_bridge");
+                bridge.callAttr("stop_engine");
+            } catch (Exception ignored) {}
+            runOnUiThread(() -> {
+                status.setText("STOPPED");
+                startButton.setEnabled(true);
+                stopButton.setEnabled(false);
+            });
+        });
+    }
+
+    private void snapshot() {
+        executor.execute(() -> {
+            try {
+                Python py = Python.getInstance();
+                PyObject bridge = py.getModule("scanner_bridge");
+                String json = bridge.callAttr("snapshot").toString();
+                runOnUiThread(() -> render(json));
+            } catch (Exception e) {
+                runOnUiThread(() -> output.setText(e.toString()));
             }
         });
     }
@@ -150,52 +179,53 @@ public class MainActivity extends Activity {
         try {
             JSONObject root = new JSONObject(json);
             if (!root.optBoolean("ok", false)) {
-                status.setText("ERROR");
-                output.setText(root.optString("error", "Unknown error"));
+                output.setText(root.optString("error", json));
                 return;
             }
-
-            String regime = root.optString("regime", "UNKNOWN");
-            JSONArray picks = root.optJSONArray("picks");
-
             StringBuilder s = new StringBuilder();
-            s.append("REGIME: ").append(regime).append("\n\n");
+            s.append("RUNNING: ").append(root.optBoolean("running"))
+             .append("   WARMING: ").append(root.optBoolean("warming"))
+             .append("   MODE: ").append(root.optBoolean("live") ? "LIVE" : "PAPER")
+             .append("\nNSE symbols: ").append(root.optInt("symbols")).append("\n\n");
 
-            if (picks == null || picks.length() == 0) {
-                s.append("NO PICK THIS CYCLE\n");
-            } else {
-                for (int i = 0; i < picks.length(); i++) {
-                    JSONObject p = picks.getJSONObject(i);
-                    s.append(i + 1).append(") ")
-                            .append(p.optString("sym")).append("\n");
-                    s.append("Price: ₹").append(p.optDouble("px"))
-                            .append("   Chg: ").append(p.optDouble("chg"))
-                            .append("%\n");
-                    s.append("Score: ").append(p.optDouble("score"))
-                            .append("   RS: ").append(p.optDouble("rs"))
-                            .append("   RVOL: ").append(p.optDouble("rvol")).append("x\n");
-                    s.append("Qty: ").append(p.optInt("qty"))
-                            .append("   Used: ₹").append(p.optDouble("used")).append("\n");
-                    s.append("T1: ₹").append(p.optDouble("t1"))
-                            .append("   T2: ₹").append(p.optDouble("t2")).append("\n");
-                    s.append("Band: ₹").append(p.optDouble("band")).append("\n");
-                    s.append("Why: ").append(p.optString("why")).append("\n\n");
+            JSONObject positions = root.optJSONObject("positions");
+            s.append("OPEN POSITIONS: ").append(positions == null ? 0 : positions.length()).append("/25\n");
+            if (positions != null) {
+                JSONArray names = positions.names();
+                if (names != null) for (int i = 0; i < names.length(); i++) {
+                    String sym = names.getString(i);
+                    JSONObject p = positions.getJSONObject(sym);
+                    s.append(sym).append("  qty=").append(p.optInt("qty"))
+                     .append(" entry=").append(p.optDouble("entry"))
+                     .append(" peak=").append(p.optDouble("peak"))
+                     .append(" TSL=").append(p.optBoolean("active") ? "ON" : "WAIT")
+                     .append("\n");
                 }
             }
-
-            s.append("Updated automatically every 10 minutes while running.");
+            s.append("\nRECENT EVENTS\n");
+            JSONArray events = root.optJSONArray("events");
+            if (events != null) {
+                for (int i = 0; i < Math.min(events.length(), 25); i++) {
+                    JSONObject e = events.getJSONObject(i);
+                    s.append(e.optString("time")).append("  ")
+                     .append(e.optString("type")).append("  ")
+                     .append(e.optString("sym", ""));
+                    if (e.has("price")) s.append(" ₹").append(e.optDouble("price"));
+                    if (e.has("qty")) s.append(" qty=").append(e.optInt("qty"));
+                    if (e.has("pnl")) s.append(" P&L=").append(e.optDouble("pnl"));
+                    if (e.has("message")) s.append(" ").append(e.optString("message"));
+                    s.append("\n");
+                }
+            }
             output.setText(s.toString());
-            status.setText("OK");
         } catch (Exception e) {
-            status.setText("PARSE ERROR");
-            output.setText(json + "\n\n" + e);
+            output.setText(json + "\n" + e);
         }
     }
 
-    @Override
-    protected void onDestroy() {
+    @Override protected void onDestroy() {
         running = false;
-        handler.removeCallbacks(scheduledScan);
+        handler.removeCallbacks(refresh);
         executor.shutdownNow();
         super.onDestroy();
     }
