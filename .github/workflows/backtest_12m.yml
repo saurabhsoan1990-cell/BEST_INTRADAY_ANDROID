@@ -18,14 +18,14 @@ jobs:
           python-version: "3.12"
       - name: Install dependencies
         run: pip install pandas pyarrow requests
-      - name: Run 15x volume backtest
+      - name: Run 6x volume backtest
         run: |
-          sed 's/5.0\*df.vol_ma20/15.0*df.vol_ma20/; s/OUT = "results"/OUT = "results_15x"/' backtest_12m.py > backtest_15x.py
-          python backtest_15x.py
+          sed 's/5.0\*df.vol_ma20/6.0*df.vol_ma20/; s/OUT = "results"/OUT = "results_6x"/' backtest_12m.py > backtest_6x.py
+          python backtest_6x.py
       - name: Upload results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: backtest-12m-2l-15x-results
-          path: results_15x/
+          name: backtest-12m-2l-6x-results
+          path: results_6x/
           if-no-files-found: warn
