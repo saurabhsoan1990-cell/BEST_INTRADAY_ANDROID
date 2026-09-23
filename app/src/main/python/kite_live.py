@@ -15,21 +15,25 @@ except Exception:
     KiteConnect = None
     KiteTicker = None
 
-TOTAL_CAPITAL = 5_000_000.0
-POSITION_CAPITAL = 200_000.0
-MAX_POSITIONS = 25
-VOLUME_MULTIPLE = 5.0
+DEFAULT_TOTAL_CAPITAL = 5_000_000.0
+DEFAULT_POSITION_CAPITAL = 200_000.0
+VOLUME_MULTIPLE = 6.0
 TSL_ACTIVATION = 0.01
 TSL_TRAIL = 0.01
 NSE_INSTRUMENTS_URL = "https://api.kite.trade/instruments/NSE"
 
 class LiveEngine:
-    def __init__(self, api_key, access_token, live=False):
+    def __init__(self, api_key, access_token, live=False, total_capital=DEFAULT_TOTAL_CAPITAL, position_capital=DEFAULT_POSITION_CAPITAL):
         if KiteConnect is None or KiteTicker is None:
             raise RuntimeError("kiteconnect package is not installed")
         self.api_key = api_key.strip()
         self.access_token = access_token.strip()
         self.live = bool(live)
+        self.total_capital = float(total_capital)
+        self.position_capital = float(position_capital)
+        if self.total_capital <= 0 or self.position_capital <= 0:
+            raise ValueError("Capital amounts must be positive")
+        self.max_positions = max(1, int(self.total_capital // self.position_capital))
         self.kite = KiteConnect(api_key=self.api_key)
         self.kite.set_access_token(self.access_token)
         self.lock = threading.RLock()
@@ -88,7 +92,7 @@ class LiveEngine:
 
     def warmup(self):
         self.warming = True
-        self._log("STATUS", message="Warming up 1-minute history; this can take a few minutes")
+        self._log("STATUS", message="Warming up 1-minute history")
         end = datetime.now()
         start = end - timedelta(days=5)
         tokens = list(self.token_to_symbol.items())
@@ -139,10 +143,11 @@ class LiveEngine:
                 else:
                     prev_cumulative = self.last_cum_volume.get(token, cumulative)
                     delta = max(0.0, cumulative - prev_cumulative)
+                    self.last_cum_volume[token] = cumulative
                     cur["h"] = max(cur["h"], price)
                     cur["l"] = min(cur["l"], price)
                     cur["c"] = price
-                    cur["v"] = max(cur["v"], delta)
+                    cur["v"] += delta
                 self._check_position(sym, price)
 
     def _signal(self, sym):
@@ -171,6 +176,7 @@ class LiveEngine:
                 p["active"] = True
                 p["peak"] = price
                 self._save_state()
+                self._log("TSL_ON", sym=sym, price=price)
         else:
             p["peak"] = max(p.get("peak", price), price)
             stop = p["peak"] * (1 - TSL_TRAIL)
@@ -193,15 +199,15 @@ class LiveEngine:
         )
 
     def _enter(self, sym, price, meta):
-        if len(self.positions) >= MAX_POSITIONS or sym in self.positions:
+        if len(self.positions) >= self.max_positions or sym in self.positions:
             return
-        qty = int(POSITION_CAPITAL // price)
+        qty = int(self.position_capital // price)
         if qty <= 0:
             return
         oid = self._order(sym, self.kite.TRANSACTION_TYPE_BUY, qty)
-        self.positions[sym] = {"entry": price, "qty": qty, "peak": price, "active": False, "order_id": oid, "entered": datetime.now().isoformat()}
+        self.positions[sym] = {"entry": price, "qty": qty, "peak": price, "active": False, "order_id": oid, "entered": datetime.now().isoformat(), "allocation": self.position_capital}
         self._save_state()
-        self._log("BUY", sym=sym, price=price, qty=qty, order=oid)
+        self._log("BUY", sym=sym, price=price, qty=qty, order=oid, allocation=self.position_capital)
 
     def _exit(self, sym, price, reason):
         p = self.positions.get(sym)
@@ -214,7 +220,7 @@ class LiveEngine:
         self._save_state()
 
     def evaluate_completed_bar(self, sym):
-        if len(self.positions) >= MAX_POSITIONS:
+        if len(self.positions) >= self.max_positions:
             return
         ok, meta = self._signal(sym)
         if not ok:
@@ -256,4 +262,4 @@ class LiveEngine:
 
     def snapshot(self):
         with self.lock:
-            return {"running": self.running, "warming": self.warming, "live": self.live, "positions": self.positions.copy(), "events": list(self.events), "symbols": len(self.instruments)}
+            return {"running": self.running, "warming": self.warming, "live": self.live, "total_capital": self.total_capital, "position_capital": self.position_capital, "max_positions": self.max_positions, "volume_multiple": VOLUME_MULTIPLE, "positions": self.positions.copy(), "events": list(self.events), "symbols": len(self.instruments)}
