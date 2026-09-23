@@ -9,8 +9,6 @@ import android.content.Intent;
 import android.os.Build;
 import android.os.IBinder;
 
-import androidx.annotation.Nullable;
-
 import com.chaquo.python.PyObject;
 import com.chaquo.python.Python;
 
@@ -33,13 +31,11 @@ public class TradingService extends Service {
     private volatile boolean started = false;
     private String lastEventKey = "";
 
-    @Override public void onCreate() {
-        super.onCreate();
-        createChannel();
-    }
+    @Override public void onCreate() { super.onCreate(); createChannel(); }
 
     @Override public int onStartCommand(Intent intent, int flags, int startId) {
         if (intent != null && ACTION_STOP.equals(intent.getAction())) {
+            started = false;
             stopEngine();
             stopForeground(STOP_FOREGROUND_REMOVE);
             stopSelf();
@@ -61,7 +57,7 @@ public class TradingService extends Service {
         try {
             Python py = Python.getInstance();
             PyObject bridge = py.getModule("scanner_bridge");
-            String result = bridge.callAttr("start_engine", apiKey, accessToken, live, total, position).toString();
+            bridge.callAttr("start_engine", apiKey, accessToken, live, total, position);
             started = true;
             updateNotification("Running " + (live ? "LIVE" : "MANUAL") + " • 6× volume • ₹" + money(total) + " / ₹" + money(position));
             monitor(bridge);
@@ -90,19 +86,14 @@ public class TradingService extends Service {
                         }
                     }
                 }
-                int open = root.optJSONObject("positions") == null ? 0 : root.optJSONObject("positions").length();
-                int max = root.optInt("max_positions", 25);
-                if ("RUNNING".equals(lastEventKey)) updateNotification("Running • " + open + "/" + max + " positions");
             } catch (Exception ignored) {}
         }
     }
 
     private void stopEngine() {
-        started = false;
         executor.execute(() -> {
-            try {
-                Python.getInstance().getModule("scanner_bridge").callAttr("stop_engine");
-            } catch (Exception ignored) {}
+            try { Python.getInstance().getModule("scanner_bridge").callAttr("stop_engine"); }
+            catch (Exception ignored) {}
         });
     }
 
@@ -138,9 +129,10 @@ public class TradingService extends Service {
 
     @Override public void onDestroy() {
         started = false;
+        stopEngine();
         executor.shutdownNow();
         super.onDestroy();
     }
 
-    @Nullable @Override public IBinder onBind(Intent intent) { return null; }
+    @Override public IBinder onBind(Intent intent) { return null; }
 }
