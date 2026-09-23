@@ -2,7 +2,9 @@ import os, io, requests
 import pandas as pd
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-CAPITAL = 5000000.0
+TOTAL_CAPITAL = 5000000.0
+POSITION_CAPITAL = 200000.0
+MAX_POSITIONS = int(TOTAL_CAPITAL // POSITION_CAPITAL)
 START = pd.Timestamp("2025-10-01", tz="Asia/Kolkata")
 END = pd.Timestamp("2026-09-30 23:59:59", tz="Asia/Kolkata")
 OUT = "results"
@@ -121,39 +123,73 @@ def main():
                 print(f"Processed {i}/{len(futs)} symbols")
     if not candidates:
         raise RuntimeError("No trades/data loaded")
+
     cols = ["symbol", "entry_ts", "entry", "exit_ts", "exit", "reason"]
     raw = pd.DataFrame(candidates, columns=cols)
     raw.entry_ts = pd.to_datetime(raw.entry_ts)
     raw.exit_ts = pd.to_datetime(raw.exit_ts)
     raw = raw.sort_values(["entry_ts", "symbol"]).reset_index(drop=True)
+
+    # Total capital is ₹50L, split into 25 independent ₹2L slots.
+    # A new trade can open whenever at least one slot is free; exits release that slot.
     accepted = []
-    capital_free_at = START
+    open_positions = []
     for r in raw.itertuples(index=False):
-        if r.entry_ts >= capital_free_at:
+        open_positions = [x for x in open_positions if x.exit_ts > r.entry_ts]
+        if len(open_positions) < MAX_POSITIONS:
             accepted.append(r)
-            capital_free_at = r.exit_ts
+            open_positions.append(r)
+
     t = pd.DataFrame(accepted, columns=cols)
     if t.empty:
-        raise RuntimeError("No accepted trades after ₹50 lakh capital constraint")
+        raise RuntimeError("No accepted trades after ₹50 lakh / 25-slot capital constraint")
+
     t["pnl_pct"] = (t.exit / t.entry - 1) * 100
-    t["capital"] = CAPITAL
-    t["pnl_rupees"] = CAPITAL * (t.exit / t.entry - 1)
-    t["capital_after"] = CAPITAL + t.pnl_rupees
+    t["capital"] = POSITION_CAPITAL
+    t["pnl_rupees"] = POSITION_CAPITAL * (t.exit / t.entry - 1)
+    t["capital_after_position"] = POSITION_CAPITAL + t.pnl_rupees
     t["month"] = t.entry_ts.dt.strftime("%Y-%m")
-    os.makedirs(OUT, exist_ok=True)
     t.to_csv(f"{OUT}/trades.csv", index=False)
-    m = t.groupby("month").agg(trades=("symbol", "size"), tsl_exits=("reason", lambda x: (x == "TSL").sum()), winners=("pnl_pct", lambda x: (x > 0).sum()), losers=("pnl_pct", lambda x: (x <= 0).sum()), pnl_pct=("pnl_pct", "sum"), avg_trade_pct=("pnl_pct", "mean"), pnl_rupees=("pnl_rupees", "sum")).reset_index()
+
+    m = t.groupby("month").agg(
+        trades=("symbol", "size"),
+        tsl_exits=("reason", lambda x: (x == "TSL").sum()),
+        winners=("pnl_pct", lambda x: (x > 0).sum()),
+        losers=("pnl_pct", lambda x: (x <= 0).sum()),
+        pnl_pct=("pnl_pct", "sum"),
+        avg_trade_pct=("pnl_pct", "mean"),
+        pnl_rupees=("pnl_rupees", "sum")
+    ).reset_index()
     m["win_pct"] = m.winners / m.trades * 100
     m.to_csv(f"{OUT}/monthly.csv", index=False)
-    equity = CAPITAL
+
+    # Portfolio equity = ₹50L cash base + cumulative realized P&L from each ₹2L slot.
+    t = t.sort_values(["exit_ts", "symbol"]).reset_index(drop=True)
+    equity = TOTAL_CAPITAL
     rows = []
     for r in t.itertuples(index=False):
-        equity *= r.exit / r.entry
+        equity += r.pnl_rupees
         rows.append([r.exit_ts, r.symbol, equity])
     eq = pd.DataFrame(rows, columns=["ts", "symbol", "equity"])
     eq.to_csv(f"{OUT}/equity_curve.csv", index=False)
+
     final = float(eq.iloc[-1].equity)
-    summary = pd.DataFrame([{"starting_capital": CAPITAL, "final_equity": final, "net_profit": final - CAPITAL, "return_pct": (final / CAPITAL - 1) * 100, "trades": len(t), "winners": int((t.pnl_pct > 0).sum()), "losers": int((t.pnl_pct <= 0).sum()), "win_pct": (t.pnl_pct > 0).mean() * 100, "avg_trade_pct": t.pnl_pct.mean(), "tsl_exits": int((t.reason == "TSL").sum()), "eod_exits": 0, "strategy": "EMA200 + volume > 5x 20-bar volume MA + close > prior 20-bar high; 1% activation; 1% TSL; no EOD exit"}])
+    summary = pd.DataFrame([{
+        "starting_capital": TOTAL_CAPITAL,
+        "position_capital": POSITION_CAPITAL,
+        "max_concurrent_positions": MAX_POSITIONS,
+        "final_equity": final,
+        "net_profit": final - TOTAL_CAPITAL,
+        "return_pct": (final / TOTAL_CAPITAL - 1) * 100,
+        "trades": len(t),
+        "winners": int((t.pnl_pct > 0).sum()),
+        "losers": int((t.pnl_pct <= 0).sum()),
+        "win_pct": (t.pnl_pct > 0).mean() * 100,
+        "avg_trade_pct": t.pnl_pct.mean(),
+        "tsl_exits": int((t.reason == "TSL").sum()),
+        "eod_exits": 0,
+        "strategy": "EMA200 + volume > 5x 20-bar volume MA + close > prior 20-bar high; ₹50L total capital split into 25 x ₹2L positions; 1% activation; 1% TSL; no EOD exit"
+    }])
     summary.to_csv(f"{OUT}/summary.csv", index=False)
     print("\nMONTHLY RESULT\n", m.to_string(index=False), "\n\nSUMMARY\n", summary.to_string(index=False))
 
