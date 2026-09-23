@@ -1,4 +1,4 @@
-name: Holding Period Tests
+name: Exit Logic Comparison Tests
 
 on:
   workflow_dispatch:
@@ -8,7 +8,27 @@ on:
       - ".github/workflows/holding_period_tests.yml"
 
 jobs:
-  backtest:
+  baseline-1pct-tsl:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: pip install pandas pyarrow requests
+      - name: Run 1% move activation + 1% TSL baseline
+        run: python backtest_12m.py
+      - name: Upload baseline results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-1-1pct-tsl-results
+          path: results/
+          if-no-files-found: warn
+
+  holding-period:
     runs-on: ubuntu-latest
     timeout-minutes: 360
     strategy:
@@ -30,6 +50,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: holding-${{ matrix.hold_days }}d-results
+          name: test-2-holding-${{ matrix.hold_days }}d-results
           path: results_holding_${{ matrix.hold_days }}d/
           if-no-files-found: warn
