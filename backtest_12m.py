@@ -3,7 +3,7 @@ import pandas as pd
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 TOTAL_CAPITAL = 5000000.0
-POSITION_CAPITAL = 500000.0
+POSITION_CAPITAL = 300000.0
 MAX_POSITIONS = int(TOTAL_CAPITAL // POSITION_CAPITAL)
 START = pd.Timestamp("2025-10-01", tz="Asia/Kolkata")
 END = pd.Timestamp("2026-09-30 23:59:59", tz="Asia/Kolkata")
@@ -130,8 +130,6 @@ def main():
     raw.exit_ts = pd.to_datetime(raw.exit_ts)
     raw = raw.sort_values(["entry_ts", "symbol"]).reset_index(drop=True)
 
-    # Total capital is ₹50L, split into 10 independent ₹5L slots.
-    # A new trade can open whenever at least one slot is free; exits release that slot.
     accepted = []
     open_positions = []
     for r in raw.itertuples(index=False):
@@ -142,7 +140,7 @@ def main():
 
     t = pd.DataFrame(accepted, columns=cols)
     if t.empty:
-        raise RuntimeError("No accepted trades after ₹50 lakh / 10-slot capital constraint")
+        raise RuntimeError("No accepted trades after ₹50 lakh / 16-slot capital constraint")
 
     t["pnl_pct"] = (t.exit / t.entry - 1) * 100
     t["capital"] = POSITION_CAPITAL
@@ -163,7 +161,6 @@ def main():
     m["win_pct"] = m.winners / m.trades * 100
     m.to_csv(f"{OUT}/monthly.csv", index=False)
 
-    # Portfolio equity = ₹50L cash base + cumulative realized P&L from each ₹5L slot.
     t = t.sort_values(["exit_ts", "symbol"]).reset_index(drop=True)
     equity = TOTAL_CAPITAL
     rows = []
@@ -188,7 +185,7 @@ def main():
         "avg_trade_pct": t.pnl_pct.mean(),
         "tsl_exits": int((t.reason == "TSL").sum()),
         "eod_exits": 0,
-        "strategy": "EMA200 + volume > 5x 20-bar volume MA + close > prior 20-bar high; ₹50L total capital split into 10 x ₹5L positions; 1% activation; 1% TSL; no EOD exit"
+        "strategy": "EMA200 + volume > 5x 20-bar volume MA + close > prior 20-bar high; ₹50L total capital split into 16 x ₹3L positions; 1% activation; 1% TSL; no EOD exit"
     }])
     summary.to_csv(f"{OUT}/summary.csv", index=False)
     print("\nMONTHLY RESULT\n", m.to_string(index=False), "\n\nSUMMARY\n", summary.to_string(index=False))
