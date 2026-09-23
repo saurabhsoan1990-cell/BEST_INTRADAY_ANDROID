@@ -14,7 +14,7 @@ def load(item):
  s,u=item
  try:
   r=requests.get(u,timeout=90); r.raise_for_status(); d=pd.read_parquet(io.BytesIO(r.content)); d.columns=[str(c).lower() for c in d.columns]
-  ren={};
+  ren={}
   for c in d.columns:
    if c in ('timestamp','datetime','date_time','date','time','ts'): ren[c]='ts'
    elif c in ('open','o'): ren[c]='o'
@@ -24,7 +24,7 @@ def load(item):
    elif c in ('volume','v','vol'): ren[c]='v'
   d=d.rename(columns=ren)
   if not {'ts','o','h','l','c','v'}.issubset(d.columns): return None
-  d.ts=pd.to_datetime(d.ts,errors='coerce');
+  d.ts=pd.to_datetime(d.ts,errors='coerce')
   if d.ts.dt.tz is None: d.ts=d.ts.dt.tz_localize('Asia/Kolkata',ambiguous='NaT',nonexistent='NaT')
   else: d.ts=d.ts.dt.tz_convert('Asia/Kolkata')
   d=d.dropna(subset=['ts','o','h','l','c','v']).sort_values('ts'); d=d[(d.ts>=START)&(d.ts<=END)]
@@ -32,7 +32,7 @@ def load(item):
   for c in ['o','h','l','c','v']: d[c]=pd.to_numeric(d[c],errors='coerce')
   d=d.dropna(subset=['o','h','l','c','v'])
   d['ema200']=d.c.ewm(span=200,adjust=False).mean(); d['vma20']=d.v.rolling(20).mean(); d['prior20h']=d.h.shift(1).rolling(20).max()
-  sig=(d.c>d.ema200)&(d.v>5*d.vma20)&(d.c>d.prior20h)
+  d['signal']=(d.c>d.ema200)&(d.v>5*d.vma20)&(d.c>d.prior20h)
   pos=None; out=[]
   for x in d.itertuples(index=False):
    if pos:
@@ -41,7 +41,7 @@ def load(item):
     else:
      pos['peak']=max(pos['peak'],float(x.h)); stop=pos['peak']*.99
      if x.l<=stop: out.append([s,pos['entry_ts'],pos['entry'],x.ts,stop]); pos=None; continue
-   if pos is None and bool(sig.loc[x.Index]): pos={'entry_ts':x.ts,'entry':float(x.c),'active':False,'peak':float(x.c)}
+   if pos is None and bool(x.signal): pos={'entry_ts':x.ts,'entry':float(x.c),'active':False,'peak':float(x.c)}
   return out
  except Exception as e:
   print('ERROR',s,type(e).__name__,e); return None
