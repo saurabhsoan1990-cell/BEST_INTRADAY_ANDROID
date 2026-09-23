@@ -9,7 +9,7 @@ OUT = "results"
 os.makedirs(OUT, exist_ok=True)
 REPOS = [("2025", "ganeshbiyer/Nse_Historical_Data"), ("2026", "ganeshbiyer/Nse_Historical_Data_2026")]
 
-# TSL: activates after +1% profit; trail is 0.4% below peak. No loss-side stop, no EOD exit.
+# TSL: activates after +1% profit; trail is 0.4% below peak. EOD exit enabled.
 TSL_ACTIVATION = 0.01
 TSL_TRAIL = 0.004
 
@@ -64,8 +64,12 @@ def load_one(symbol, file_urls):
 def backtest_symbol(symbol, df):
     df=df.copy(); df["ema200"]=df.c.ewm(span=200, adjust=False).mean(); df["vol_ma20"]=df.v.rolling(20).mean(); df["prior20h"]=df.h.shift(1).rolling(20).max()
     df["signal"]=(df.c>df.ema200)&(df.v>5.0*df.vol_ma20)&(df.c>df.prior20h)
-    trades=[]; pos=None
+    trades=[]; pos=None; last_date=None; last_row=None
     for r in df.itertuples(index=False):
+        current_date=r.ts.date()
+        # Exit any position at the previous trading day's final bar close.
+        if pos is not None and last_date is not None and current_date != last_date:
+            trades.append([symbol,pos["entry_ts"],pos["entry"],last_row.ts,float(last_row.c),"EOD"]); pos=None
         if pos is not None:
             if not pos["active"]:
                 if r.h >= pos["entry"]*(1+TSL_ACTIVATION): pos["active"]=True; pos["peak"]=max(pos["entry"]*(1+TSL_ACTIVATION),float(r.h))
@@ -74,6 +78,10 @@ def backtest_symbol(symbol, df):
                 if r.l <= stop:
                     trades.append([symbol,pos["entry_ts"],pos["entry"],r.ts,stop,"TSL"]); pos=None; continue
         if pos is None and bool(r.signal): pos={"entry_ts":r.ts,"entry":float(r.c),"active":False,"peak":float(r.c)}
+        last_date=current_date; last_row=r
+    # Exit an open position on the final available bar of the backtest/session.
+    if pos is not None and last_row is not None:
+        trades.append([symbol,pos["entry_ts"],pos["entry"],last_row.ts,float(last_row.c),"EOD"])
     return trades
 
 def main():
@@ -95,10 +103,10 @@ def main():
     t=pd.DataFrame(accepted,columns=cols)
     if t.empty: raise RuntimeError("No accepted trades after ₹2 lakh capital constraint")
     t["pnl_pct"]=(t.exit/t.entry-1)*100; t["capital"]=CAPITAL; t["pnl_rupees"]=CAPITAL*(t.exit/t.entry-1); t["capital_after"]=CAPITAL+t.pnl_rupees; t["month"]=t.entry_ts.dt.strftime("%Y-%m"); t.to_csv(f"{OUT}/trades.csv",index=False)
-    m=t.groupby("month").agg(trades=("symbol","size"),tsl_exits=("reason",lambda x:(x=="TSL").sum()),winners=("pnl_pct",lambda x:(x>0).sum()),losers=("pnl_pct",lambda x:(x<=0).sum()),pnl_pct=("pnl_pct","sum"),avg_trade_pct=("pnl_pct","mean"),pnl_rupees=("pnl_rupees","sum")).reset_index(); m["win_pct"]=m.winners/m.trades*100; m.to_csv(f"{OUT}/monthly.csv",index=False)
+    m=t.groupby("month").agg(trades=("symbol","size"),tsl_exits=("reason",lambda x:(x=="TSL").sum()),eod_exits=("reason",lambda x:(x=="EOD").sum()),winners=("pnl_pct",lambda x:(x>0).sum()),losers=("pnl_pct",lambda x:(x<=0).sum()),pnl_pct=("pnl_pct","sum"),avg_trade_pct=("pnl_pct","mean"),pnl_rupees=("pnl_rupees","sum")).reset_index(); m["win_pct"]=m.winners/m.trades*100; m.to_csv(f"{OUT}/monthly.csv",index=False)
     equity=CAPITAL; rows=[]
     for r in t.itertuples(index=False): equity*=r.exit/r.entry; rows.append([r.exit_ts,r.symbol,equity])
     eq=pd.DataFrame(rows,columns=["ts","symbol","equity"]); eq.to_csv(f"{OUT}/equity_curve.csv",index=False); final=float(eq.iloc[-1].equity)
-    summary=pd.DataFrame([{"starting_capital":CAPITAL,"final_equity":final,"net_profit":final-CAPITAL,"return_pct":(final/CAPITAL-1)*100,"trades":len(t),"winners":int((t.pnl_pct>0).sum()),"losers":int((t.pnl_pct<=0).sum()),"win_pct":(t.pnl_pct>0).mean()*100,"avg_trade_pct":t.pnl_pct.mean(),"tsl_exits":int((t.reason=="TSL").sum()),"eod_exits":0}]); summary.to_csv(f"{OUT}/summary.csv",index=False); print("\nMONTHLY RESULT\n",m.to_string(index=False),"\n\nSUMMARY\n",summary.to_string(index=False))
+    summary=pd.DataFrame([{"starting_capital":CAPITAL,"final_equity":final,"net_profit":final-CAPITAL,"return_pct":(final/CAPITAL-1)*100,"trades":len(t),"winners":int((t.pnl_pct>0).sum()),"losers":int((t.pnl_pct<=0).sum()),"win_pct":(t.pnl_pct>0).mean()*100,"avg_trade_pct":t.pnl_pct.mean(),"tsl_exits":int((t.reason=="TSL").sum()),"eod_exits":int((t.reason=="EOD").sum())}]); summary.to_csv(f"{OUT}/summary.csv",index=False); print("\nMONTHLY RESULT\n",m.to_string(index=False),"\n\nSUMMARY\n",summary.to_string(index=False))
 
 if __name__=="__main__": main()
