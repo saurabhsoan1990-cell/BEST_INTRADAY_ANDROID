@@ -6,16 +6,11 @@ CAPITAL = 5000000.0
 START = pd.Timestamp("2025-10-01", tz="Asia/Kolkata")
 END = pd.Timestamp("2026-09-30 23:59:59", tz="Asia/Kolkata")
 OUT = "results"
+os.makedirs(OUT, exist_ok=True)
 REPOS = [("2025", "ganeshbiyer/Nse_Historical_Data"), ("2026", "ganeshbiyer/Nse_Historical_Data_2026")]
 
-# No EOD exit. TSL activates after +1% and trails 0.4% below the peak.
 TSL_ACTIVATION = 0.01
 TSL_TRAIL = 0.004
-
-# 15-minute RSI(14) confirmation:
-# - RSI must be above 50 and rising for 3 completed 15m bars.
-# - A recent 3-bar RSI bottom must have been <= 40.
-# - Current RSI must have recovered at least 2 RSI points from that bottom.
 RSI_LENGTH = 14
 RSI_BOTTOM_LEVEL = 40.0
 RSI_TREND_LEVEL = 50.0
@@ -88,28 +83,16 @@ def load_one(symbol, file_urls):
 
 def add_15m_rsi_filter(df):
     x = df.set_index("ts")[["o", "h", "l", "c", "v"]]
-    bars = x.resample("15min", offset="9h15min", label="right", closed="right").agg(
-        {"o": "first", "h": "max", "l": "min", "c": "last", "v": "sum"}
-    ).dropna(subset=["c"])
-
+    bars = x.resample("15min", offset="9h15min", label="right", closed="right").agg({"o": "first", "h": "max", "l": "min", "c": "last", "v": "sum"}).dropna(subset=["c"])
     delta = bars["c"].diff()
     gain = delta.clip(lower=0)
     loss = -delta.clip(upper=0)
     avg_gain = gain.ewm(alpha=1 / RSI_LENGTH, adjust=False, min_periods=RSI_LENGTH).mean()
     avg_loss = loss.ewm(alpha=1 / RSI_LENGTH, adjust=False, min_periods=RSI_LENGTH).mean()
     rs = avg_gain / avg_loss.replace(0, pd.NA)
-    rsi = 100 - (100 / (1 + rs))
-    bars["rsi14"] = rsi.astype(float)
-
+    bars["rsi14"] = (100 - (100 / (1 + rs))).astype(float)
     recent_bottom = bars["rsi14"].shift(1).rolling(RSI_LOOKBACK_BARS).min()
-    bars["rsi_ok"] = (
-        (bars["rsi14"] > RSI_TREND_LEVEL) &
-        (bars["rsi14"] > bars["rsi14"].shift(1)) &
-        (bars["rsi14"].shift(1) > bars["rsi14"].shift(2)) &
-        (recent_bottom <= RSI_BOTTOM_LEVEL) &
-        (bars["rsi14"] >= recent_bottom + RSI_RECOVERY)
-    )
-
+    bars["rsi_ok"] = ((bars["rsi14"] > RSI_TREND_LEVEL) & (bars["rsi14"] > bars["rsi14"].shift(1)) & (bars["rsi14"].shift(1) > bars["rsi14"].shift(2)) & (recent_bottom <= RSI_BOTTOM_LEVEL) & (bars["rsi14"] >= recent_bottom + RSI_RECOVERY))
     rsi_frame = bars[["rsi14", "rsi_ok"]].reset_index().sort_values("ts")
     base = df.sort_values("ts").copy()
     base = pd.merge_asof(base, rsi_frame, on="ts", direction="backward")
@@ -125,7 +108,6 @@ def backtest_symbol(symbol, df):
     df["base_signal"] = (df.c > df.ema200) & (df.v > 5.0 * df.vol_ma20) & (df.c > df.prior20h)
     df = add_15m_rsi_filter(df)
     df["signal"] = df["base_signal"] & df["rsi_ok"]
-
     trades = []
     pos = None
     for r in df.itertuples(index=False):
@@ -143,11 +125,11 @@ def backtest_symbol(symbol, df):
                     continue
         if pos is None and bool(r.signal):
             pos = {"entry_ts": r.ts, "entry": float(r.c), "active": False, "peak": float(r.c)}
-
     return trades
 
 
 def main():
+    os.makedirs(OUT, exist_ok=True)
     file_urls = {year: get_repo_files(repo) for year, repo in REPOS}
     syms = sorted(set(file_urls["2025"]) | set(file_urls["2026"]))
     print(f"Found {len(syms)} parquet symbols")
@@ -163,7 +145,6 @@ def main():
                 print(f"ERROR {futs[f]}: {type(e).__name__}: {e}")
             if i % 25 == 0:
                 print(f"Processed {i}/{len(futs)} symbols")
-
     if not candidates:
         raise RuntimeError("No trades/data loaded")
     cols = ["symbol", "entry_ts", "entry", "exit_ts", "exit", "reason"]
@@ -171,14 +152,12 @@ def main():
     raw.entry_ts = pd.to_datetime(raw.entry_ts)
     raw.exit_ts = pd.to_datetime(raw.exit_ts)
     raw = raw.sort_values(["entry_ts", "symbol"]).reset_index(drop=True)
-
     accepted = []
     capital_free_at = START
     for r in raw.itertuples(index=False):
         if r.entry_ts >= capital_free_at:
             accepted.append(r)
             capital_free_at = r.exit_ts
-
     t = pd.DataFrame(accepted, columns=cols)
     if t.empty:
         raise RuntimeError("No accepted trades after ₹50 lakh capital constraint")
@@ -187,20 +166,11 @@ def main():
     t["pnl_rupees"] = CAPITAL * (t.exit / t.entry - 1)
     t["capital_after"] = CAPITAL + t.pnl_rupees
     t["month"] = t.entry_ts.dt.strftime("%Y-%m")
+    os.makedirs(OUT, exist_ok=True)
     t.to_csv(f"{OUT}/trades.csv", index=False)
-
-    m = t.groupby("month").agg(
-        trades=("symbol", "size"),
-        tsl_exits=("reason", lambda x: (x == "TSL").sum()),
-        winners=("pnl_pct", lambda x: (x > 0).sum()),
-        losers=("pnl_pct", lambda x: (x <= 0).sum()),
-        pnl_pct=("pnl_pct", "sum"),
-        avg_trade_pct=("pnl_pct", "mean"),
-        pnl_rupees=("pnl_rupees", "sum"),
-    ).reset_index()
+    m = t.groupby("month").agg(trades=("symbol", "size"), tsl_exits=("reason", lambda x: (x == "TSL").sum()), winners=("pnl_pct", lambda x: (x > 0).sum()), losers=("pnl_pct", lambda x: (x <= 0).sum()), pnl_pct=("pnl_pct", "sum"), avg_trade_pct=("pnl_pct", "mean"), pnl_rupees=("pnl_rupees", "sum")).reset_index()
     m["win_pct"] = m.winners / m.trades * 100
     m.to_csv(f"{OUT}/monthly.csv", index=False)
-
     equity = CAPITAL
     rows = []
     for r in t.itertuples(index=False):
@@ -209,21 +179,7 @@ def main():
     eq = pd.DataFrame(rows, columns=["ts", "symbol", "equity"])
     eq.to_csv(f"{OUT}/equity_curve.csv", index=False)
     final = float(eq.iloc[-1].equity)
-
-    summary = pd.DataFrame([{
-        "starting_capital": CAPITAL,
-        "final_equity": final,
-        "net_profit": final - CAPITAL,
-        "return_pct": (final / CAPITAL - 1) * 100,
-        "trades": len(t),
-        "winners": int((t.pnl_pct > 0).sum()),
-        "losers": int((t.pnl_pct <= 0).sum()),
-        "win_pct": (t.pnl_pct > 0).mean() * 100,
-        "avg_trade_pct": t.pnl_pct.mean(),
-        "tsl_exits": int((t.reason == "TSL").sum()),
-        "eod_exits": 0,
-        "rsi_filter": "15m RSI14 > 50, rising 3 bars, recent 3-bar bottom <= 40, recovery >= 2 RSI points",
-    }])
+    summary = pd.DataFrame([{"starting_capital": CAPITAL, "final_equity": final, "net_profit": final - CAPITAL, "return_pct": (final / CAPITAL - 1) * 100, "trades": len(t), "winners": int((t.pnl_pct > 0).sum()), "losers": int((t.pnl_pct <= 0).sum()), "win_pct": (t.pnl_pct > 0).mean() * 100, "avg_trade_pct": t.pnl_pct.mean(), "tsl_exits": int((t.reason == "TSL").sum()), "eod_exits": 0, "rsi_filter": "15m RSI14 > 50, rising 3 bars, recent 3-bar bottom <= 40, recovery >= 2 RSI points"}])
     summary.to_csv(f"{OUT}/summary.csv", index=False)
     print("\nMONTHLY RESULT\n", m.to_string(index=False), "\n\nSUMMARY\n", summary.to_string(index=False))
 
