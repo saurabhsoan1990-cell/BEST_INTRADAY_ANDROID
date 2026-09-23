@@ -116,7 +116,7 @@ public class TradingService extends Service {
     private static String money(double x) { return String.format(java.util.Locale.US, "%.0f", x); }
     private static String shortText(String s, int n) { return s.length() <= n ? s : s.substring(0, n); }
 
-    @Override public void onTimeout(int startId) { started = false; stopEngine(); stopForeground(STOP_FOREGROUND_REMOVE); stopSelf(); }
+    @Override public void onTimeout(int startId, int fgsType) { started = false; stopEngine(); stopForeground(STOP_FOREGROUND_REMOVE); stopSelf(); }
     @Override public void onDestroy() { started = false; stopEngine(); executor.shutdownNow(); super.onDestroy(); }
     @Override public IBinder onBind(Intent intent) { return null; }
 }
