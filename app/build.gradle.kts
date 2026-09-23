@@ -5,14 +5,14 @@ plugins {
 
 android {
     namespace = "com.bestintraday"
-    compileSdk = 35
+    compileSdk = 33
 
     defaultConfig {
         applicationId = "com.bestintraday"
         minSdk = 24
-        targetSdk = 35
-        versionCode = 2
-        versionName = "2.0"
+        targetSdk = 33
+        versionCode = 3
+        versionName = "3.0"
 
         ndk {
             abiFilters += listOf("arm64-v8a", "x86_64")
@@ -22,7 +22,7 @@ android {
 
 chaquopy {
     defaultConfig {
-        version = "3.13"
+        version = "3.12"
         pip {
             install("pandas")
             install("requests")
