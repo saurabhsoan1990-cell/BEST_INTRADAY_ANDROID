@@ -27,12 +27,47 @@ jobs:
         with:
           gradle-version: '8.11.1'
 
-      - name: Build debug APK
+      - name: Build APK
         run: gradle --no-daemon :app:assembleDebug
 
-      - name: Upload APK
+      - name: Zipalign and sign APK for Android 11+
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK_IN="app/build/outputs/apk/debug/app-debug.apk"
+          APK_ALIGNED="app-debug-aligned.apk"
+          APK_OUT="app-debug-signed.apk"
+          BUILD_TOOLS="$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)"
+          ZIPALIGN="$BUILD_TOOLS/zipalign"
+          APKSIGNER="$BUILD_TOOLS/apksigner"
+
+          keytool -genkeypair \
+            -keystore build-signing.jks \
+            -storepass changeit \
+            -keypass changeit \
+            -alias bestintraday \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 10000 \
+            -dname "CN=Best Intraday,O=Best Intraday,OU=Trading"
+
+          "$ZIPALIGN" -f -p 4 "$APK_IN" "$APK_ALIGNED"
+
+          "$APKSIGNER" sign \
+            --ks build-signing.jks \
+            --ks-pass pass:changeit \
+            --key-pass pass:changeit \
+            --v1-signing-enabled true \
+            --v2-signing-enabled true \
+            --out "$APK_OUT" \
+            "$APK_ALIGNED"
+
+          "$APKSIGNER" verify --verbose "$APK_OUT"
+          mv "$APK_OUT" app/build/outputs/apk/debug/app-debug.apk
+
+      - name: Upload signed APK
         uses: actions/upload-artifact@v4
         with:
           name: best-intraday-zerodha-live-apk
-          path: app/build/outputs/apk/debug/*.apk
+          path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
