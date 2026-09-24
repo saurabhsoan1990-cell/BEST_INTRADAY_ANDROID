@@ -11,8 +11,8 @@ android {
         applicationId = "com.bestintraday"
         minSdk = 24
         targetSdk = 33
-        versionCode = 4
-        versionName = "4.0-ZERODHA-ONLY"
+        versionCode = 5
+        versionName = "5.0-UPSTOX-6X-LIVE"
 
         ndk {
             abiFilters += listOf("arm64-v8a", "x86_64")
@@ -28,7 +28,7 @@ chaquopy {
             install("requests")
             install("python-dateutil")
             install("lxml")
-            install("kiteconnect")
+            install("upstox-python-sdk")
         }
     }
 }
