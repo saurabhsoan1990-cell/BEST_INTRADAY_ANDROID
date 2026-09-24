@@ -28,7 +28,6 @@ chaquopy {
             install("requests")
             install("python-dateutil")
             install("lxml")
-            install("upstox-python-sdk")
         }
     }
 }
