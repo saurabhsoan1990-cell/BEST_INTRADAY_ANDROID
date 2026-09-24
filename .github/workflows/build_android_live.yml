@@ -1,4 +1,4 @@
-name: Build Android Live APK
+name: Build Android Upstox 6x Live APK
 
 on:
   workflow_dispatch:
@@ -38,36 +38,15 @@ jobs:
           APK_ALIGNED="app-debug-aligned.apk"
           APK_OUT="app-debug-signed.apk"
           BUILD_TOOLS="$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)"
-          ZIPALIGN="$BUILD_TOOLS/zipalign"
-          APKSIGNER="$BUILD_TOOLS/apksigner"
-
-          keytool -genkeypair \
-            -keystore build-signing.jks \
-            -storepass changeit \
-            -keypass changeit \
-            -alias bestintraday \
-            -keyalg RSA \
-            -keysize 2048 \
-            -validity 10000 \
-            -dname "CN=Best Intraday,O=Best Intraday,OU=Trading"
-
-          "$ZIPALIGN" -f -p 4 "$APK_IN" "$APK_ALIGNED"
-
-          "$APKSIGNER" sign \
-            --ks build-signing.jks \
-            --ks-pass pass:changeit \
-            --key-pass pass:changeit \
-            --v1-signing-enabled true \
-            --v2-signing-enabled true \
-            --out "$APK_OUT" \
-            "$APK_ALIGNED"
-
-          "$APKSIGNER" verify --verbose "$APK_OUT"
-          mv "$APK_OUT" app/build/outputs/apk/debug/app-debug.apk
+          "$BUILD_TOOLS/zipalign" -f -p 4 "$APK_IN" "$APK_ALIGNED"
+          keytool -genkeypair -keystore build-signing.jks -storepass changeit -keypass changeit -alias bestintraday -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Best Intraday,O=Best Intraday,OU=Trading"
+          "$BUILD_TOOLS/apksigner" sign --ks build-signing.jks --ks-pass pass:changeit --key-pass pass:changeit --v1-signing-enabled true --v2-signing-enabled true --out "$APK_OUT" "$APK_ALIGNED"
+          "$BUILD_TOOLS/apksigner" verify --verbose "$APK_OUT"
+          mv "$APK_OUT" "$APK_IN"
 
       - name: Upload signed APK
         uses: actions/upload-artifact@v4
         with:
-          name: best-intraday-zerodha-live-apk
+          name: best-intraday-upstox-6x-live-apk
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
