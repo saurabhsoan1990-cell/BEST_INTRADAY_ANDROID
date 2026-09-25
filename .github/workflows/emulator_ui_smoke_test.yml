@@ -44,7 +44,13 @@ jobs:
             adb exec-out screencap -p > /tmp/best-intraday-ui.png
             adb shell dumpsys activity activities | grep -E 'mResumedActivity|mCurrentFocus' || true
             adb shell uiautomator dump /sdcard/window.xml >/dev/null
-            adb shell cat /sdcard/window.xml | grep -E 'BEST INTRADAY|Dashboard|Open Positions|Today' || true
+            adb shell cat /sdcard/window.xml | grep -q 'BEST INTRADAY'
+            adb shell cat /sdcard/window.xml | grep -q 'Dashboard'
+            adb shell cat /sdcard/window.xml | grep -q 'Positions'
+            adb shell cat /sdcard/window.xml | grep -q 'Trades'
+            adb shell cat /sdcard/window.xml | grep -q 'Watchlist'
+            adb shell cat /sdcard/window.xml | grep -q 'Settings'
+            ! adb shell dumpsys activity activities | grep -q 'Application Not Responding'
 
       - name: Upload emulator screenshot
         uses: actions/upload-artifact@v4
