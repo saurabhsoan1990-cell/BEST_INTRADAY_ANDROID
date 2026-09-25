@@ -13,13 +13,16 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Enable KVM
+      - name: Enable KVM for Android emulator
         run: |
           sudo apt-get update -y
           sudo apt-get install -y cpu-checker
-          sudo chmod 666 /dev/kvm || true
-          sudo usermod -aG kvm "$USER" || true
-          ls -l /dev/kvm || true
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          sudo chmod 666 /dev/kvm
+          kvm-ok || true
+          ls -l /dev/kvm
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
@@ -35,37 +38,48 @@ jobs:
       - name: Build debug APK
         run: gradle --no-daemon :app:assembleDebug
 
-      - name: Run app on Android 11 emulator
+      - name: Run app on Android 11 hardware-accelerated emulator
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 30
           arch: x86_64
           profile: pixel_2
-          emulator-options: -no-window -no-audio -no-boot-anim -gpu swiftshader_indirect
+          emulator-options: -no-window -no-audio -no-boot-anim -gpu swiftshader_indirect -camera-back none
           disable-animations: true
           disable-linux-hw-accel: false
           emulator-boot-timeout: 600
           script: |
             set -e
             adb wait-for-device
+            adb shell settings put global window_animation_scale 0
+            adb shell settings put global transition_animation_scale 0
+            adb shell settings put global animator_duration_scale 0
             adb install -r app/build/outputs/apk/debug/app-debug.apk
             adb shell am force-stop com.bestintraday
             adb shell monkey -p com.bestintraday 1
-            sleep 20
+            sleep 15
             echo '--- ACTIVITY ---'
             adb shell dumpsys activity activities | grep -E 'mResumedActivity|mCurrentFocus' || true
-            echo '--- SCREENSHOT ---'
+            echo '--- SYSTEM UI ANR CHECK ---'
+            if adb shell dumpsys activity activities | grep -q 'Application Not Responding: com.android.systemui'; then
+              adb exec-out screencap -p > /tmp/best-intraday-anr.png || true
+              exit 1
+            fi
+            echo '--- APP SCREENSHOT ---'
             adb exec-out screencap -p > /tmp/best-intraday-ui.png
+            test -s /tmp/best-intraday-ui.png
             echo '--- UI HIERARCHY ---'
             adb shell uiautomator dump /sdcard/window.xml >/dev/null
-            adb shell cat /sdcard/window.xml | grep -E 'BEST INTRADAY|DASHBOARD|SETTINGS|ENGINE STATUS|AVAILABLE|TODAY P' || true
-            echo '--- ANR CHECK ---'
-            if adb shell dumpsys activity activities | grep -q 'Application Not Responding: com.android.systemui'; then exit 1; fi
+            adb shell cat /sdcard/window.xml | grep -E 'BEST INTRADAY|DASHBOARD|SETTINGS|ENGINE STATUS|AVAILABLE|TODAY P|OPEN POSITIONS|LIVE MARKET SCAN' >/tmp/ui_matches.txt
+            cat /tmp/ui_matches.txt
+            test -s /tmp/ui_matches.txt
 
       - name: Upload emulator screenshot
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: best-intraday-emulator-ui-v2
-          path: /tmp/best-intraday-ui.png
-          if-no-files-found: error
+          path: |
+            /tmp/best-intraday-ui.png
+            /tmp/best-intraday-anr.png
+          if-no-files-found: ignore
