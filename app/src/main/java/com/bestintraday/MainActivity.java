@@ -35,6 +35,7 @@ public class MainActivity extends Activity {
  private static final int BG=Color.rgb(5,14,25), PANEL=Color.rgb(8,27,42), PANEL2=Color.rgb(13,38,56), TEXT=Color.rgb(241,248,250), MUTED=Color.rgb(145,166,181), CYAN=Color.rgb(0,196,255), GREEN=Color.rgb(21,226,119), RED=Color.rgb(255,72,82), LINE=Color.rgb(25,58,78), AMBER=Color.rgb(255,190,63), PURPLE=Color.rgb(126,91,255);
  private LinearLayout root,content,bottomNav; private EditText tokenInput,totalInput,positionInput; private RadioButton liveRadio,manualRadio; private String screen="dashboard"; private JSONObject snapshot=new JSONObject();
  private final ScheduledExecutorService refresh=Executors.newSingleThreadScheduledExecutor(); private final NumberFormat money=NumberFormat.getCurrencyInstance(new Locale("en","IN"));
+ private String money(double v){return money.format(v);}
  private int dp(float v){return (int)(v*getResources().getDisplayMetrics().density+0.5f);} 
  private GradientDrawable bg(int c,int s,int r){GradientDrawable g=new GradientDrawable();g.setColor(c);g.setCornerRadius(dp(r));if(s!=Color.TRANSPARENT)g.setStroke(dp(1),s);return g;}
  private TextView text(String s,float z,int c,boolean bold){TextView t=new TextView(this);t.setText(s);t.setTextSize(z);t.setTextColor(c);t.setTypeface(Typeface.DEFAULT,bold?Typeface.BOLD:Typeface.NORMAL);return t;}
