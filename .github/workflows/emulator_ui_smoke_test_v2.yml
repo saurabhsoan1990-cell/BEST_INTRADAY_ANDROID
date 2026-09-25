@@ -60,31 +60,20 @@ jobs:
             adb shell monkey -p com.bestintraday 1
 
             echo '--- WAIT FOR APP ---'
-            app_ready=0
-            for i in $(seq 1 60); do
-              if adb shell dumpsys activity activities | grep -q 'com.bestintraday/.MainActivity'; then
-                app_ready=1
-                break
-              fi
+            i=0
+            until adb shell dumpsys activity activities | grep -q 'com.bestintraday/.MainActivity'; do
+              i=$((i + 1))
+              [ "$i" -ge 60 ] && break
               sleep 2
             done
-            if [ "$app_ready" -ne 1 ]; then
-              adb logcat -d -b all -v time > /tmp/best-intraday-logcat.txt || true
-              echo 'MainActivity did not become resumed'
-              exit 1
-            fi
+            [ "$i" -lt 60 ] || { adb logcat -d -b all -v time > /tmp/best-intraday-logcat.txt || true; echo 'MainActivity did not become resumed'; exit 1; }
 
             echo '--- ACTIVITY ---'
             adb shell dumpsys activity activities | grep -E 'mResumedActivity|mCurrentFocus' || true
 
             echo '--- ANR CHECK ---'
             anr_line="$(adb shell dumpsys activity activities | grep -E 'Application Not Responding: com\.bestintraday' || true)"
-            if [ -n "$anr_line" ]; then
-              adb exec-out screencap -p > /tmp/best-intraday-anr.png || true
-              adb logcat -d -b all -v time > /tmp/best-intraday-logcat.txt || true
-              echo 'Best Intraday ANR detected'
-              exit 1
-            fi
+            [ -z "$anr_line" ] || { adb exec-out screencap -p > /tmp/best-intraday-anr.png || true; adb logcat -d -b all -v time > /tmp/best-intraday-logcat.txt || true; echo 'Best Intraday ANR detected'; exit 1; }
 
             echo '--- UI SCREENSHOT ---'
             adb exec-out screencap -p > /tmp/best-intraday-ui.png
@@ -131,12 +120,7 @@ PY
 
             echo '--- FINAL APP ANR CHECK ---'
             final_anr="$(adb shell dumpsys activity activities | grep -E 'Application Not Responding: com\.bestintraday' || true)"
-            if [ -n "$final_anr" ]; then
-              adb exec-out screencap -p > /tmp/best-intraday-anr.png || true
-              adb logcat -d -b all -v time > /tmp/best-intraday-logcat.txt || true
-              echo 'Best Intraday ANR detected after UI test'
-              exit 1
-            fi
+            [ -z "$final_anr" ] || { adb exec-out screencap -p > /tmp/best-intraday-anr.png || true; adb logcat -d -b all -v time > /tmp/best-intraday-logcat.txt || true; echo 'Best Intraday ANR detected after UI test'; exit 1; }
 
             echo 'PERFORMANCE GATE: PASS'
 
