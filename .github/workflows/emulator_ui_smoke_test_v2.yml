@@ -8,7 +8,7 @@ on:
 jobs:
   ui-smoke-test:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -38,7 +38,7 @@ jobs:
       - name: Build debug APK
         run: gradle --no-daemon :app:assembleDebug
 
-      - name: Run app on Android 11 hardware-accelerated emulator
+      - name: Run functional + performance UI test
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 30
@@ -49,7 +49,7 @@ jobs:
           disable-linux-hw-accel: false
           emulator-boot-timeout: 600
           script: |
-            set -e
+            set -euo pipefail
             adb wait-for-device
             adb shell settings put global window_animation_scale 0
             adb shell settings put global transition_animation_scale 0
@@ -58,28 +58,81 @@ jobs:
             adb shell am force-stop com.bestintraday
             adb shell monkey -p com.bestintraday 1
             sleep 15
-            echo '--- ACTIVITY ---'
-            adb shell dumpsys activity activities | grep -E 'mResumedActivity|mCurrentFocus' || true
-            echo '--- SYSTEM UI ANR CHECK ---'
-            if adb shell dumpsys activity activities | grep -q 'Application Not Responding: com.android.systemui'; then
+
+            echo '--- ANR CHECK ---'
+            if adb shell dumpsys activity activities | grep -qE 'Application Not Responding: (com\.bestintraday|com\.android\.systemui)'; then
               adb exec-out screencap -p > /tmp/best-intraday-anr.png || true
+              adb logcat -d -b all -v time > /tmp/best-intraday-logcat.txt || true
+              echo 'ANR detected'
               exit 1
             fi
-            echo '--- APP SCREENSHOT ---'
+
+            echo '--- ACTIVITY ---'
+            adb shell dumpsys activity activities | grep -E 'mResumedActivity|mCurrentFocus' || true
+
+            echo '--- WARM-UP ---'
+            sleep 5
+
+            echo '--- UI SCREENSHOT ---'
             adb exec-out screencap -p > /tmp/best-intraday-ui.png
             test -s /tmp/best-intraday-ui.png
+
             echo '--- UI HIERARCHY ---'
             adb shell uiautomator dump /sdcard/window.xml >/dev/null
             adb shell cat /sdcard/window.xml | grep -E 'BEST INTRADAY|DASHBOARD|SETTINGS|ENGINE STATUS|AVAILABLE|TODAY P|OPEN POSITIONS|LIVE MARKET SCAN' >/tmp/ui_matches.txt
             cat /tmp/ui_matches.txt
             test -s /tmp/ui_matches.txt
 
-      - name: Upload emulator screenshot
+            echo '--- FRAME PERFORMANCE ---'
+            adb shell dumpsys gfxinfo com.bestintraday reset >/dev/null
+            sleep 2
+            # Exercise the app surface repeatedly to create a measurable frame sample.
+            for i in $(seq 1 8); do
+              adb shell input swipe 540 1500 540 500 250 || true
+              adb shell input swipe 540 500 540 1500 250 || true
+            done
+            sleep 2
+            adb shell dumpsys gfxinfo com.bestintraday > /tmp/gfxinfo.txt
+            cat /tmp/gfxinfo.txt
+
+            # Extract the total frame count and janky-frame count when available.
+            python3 - <<'PY'
+            import re, pathlib, sys
+            text = pathlib.Path('/tmp/gfxinfo.txt').read_text(errors='ignore')
+            m = re.search(r'(?:Janky frames|Janky frames \(\+slow\)):\s*(\d+)', text)
+            total = re.search(r'(?:Total frames rendered|Total frames):\s*(\d+)', text)
+            if not m or not total:
+                print('Could not parse gfxinfo frame counters; failing performance gate.')
+                sys.exit(1)
+            janky = int(m.group(1)); frames = int(total.group(1))
+            pct = (janky / frames * 100) if frames else 100.0
+            print(f'frames={frames} janky={janky} jank_pct={pct:.2f}%')
+            if frames < 30:
+                print('Insufficient frame sample.')
+                sys.exit(1)
+            if pct > 5.0:
+                print('Excessive jank.')
+                sys.exit(1)
+            PY
+
+            echo '--- FINAL ANR CHECK ---'
+            if adb shell dumpsys activity activities | grep -qE 'Application Not Responding: (com\.bestintraday|com\.android\.systemui)'; then
+              adb exec-out screencap -p > /tmp/best-intraday-anr.png || true
+              adb logcat -d -b all -v time > /tmp/best-intraday-logcat.txt || true
+              exit 1
+            fi
+
+            echo 'PERFORMANCE GATE: PASS'
+
+      - name: Upload emulator performance evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: best-intraday-emulator-ui-v2
+          name: best-intraday-emulator-performance-v2
           path: |
             /tmp/best-intraday-ui.png
             /tmp/best-intraday-anr.png
+            /tmp/best-intraday-logcat.txt
+            /tmp/gfxinfo.txt
+            /tmp/ui_matches.txt
           if-no-files-found: ignore
