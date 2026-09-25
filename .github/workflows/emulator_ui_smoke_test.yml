@@ -37,12 +37,20 @@ jobs:
           disable-animations: true
           script: |
             set -e
+            adb wait-for-device
+            until [ "$(adb shell getprop sys.boot_completed | tr -d '\r')" = "1" ]; do sleep 5; done
+            adb shell settings put global window_animation_scale 0
+            adb shell settings put global transition_animation_scale 0
+            adb shell settings put global animator_duration_scale 0
             adb install -r app/build/outputs/apk/debug/app-debug.apk
             adb shell am force-stop com.bestintraday
             adb shell monkey -p com.bestintraday 1
-            sleep 8
-            adb exec-out screencap -p > /tmp/best-intraday-ui.png
+            for i in $(seq 1 30); do
+              if adb shell dumpsys activity activities | grep -q 'com.bestintraday/.MainActivity'; then break; fi
+              sleep 2
+            done
             adb shell dumpsys activity activities | grep -E 'mResumedActivity|mCurrentFocus' || true
+            adb exec-out screencap -p > /tmp/best-intraday-ui.png
             adb shell uiautomator dump /sdcard/window.xml >/dev/null
             adb shell cat /sdcard/window.xml | grep -q 'BEST INTRADAY'
             adb shell cat /sdcard/window.xml | grep -q 'Dashboard'
@@ -50,7 +58,10 @@ jobs:
             adb shell cat /sdcard/window.xml | grep -q 'Trades'
             adb shell cat /sdcard/window.xml | grep -q 'Watchlist'
             adb shell cat /sdcard/window.xml | grep -q 'Settings'
-            ! adb shell dumpsys activity activities | grep -q 'Application Not Responding'
+            if adb shell dumpsys activity activities | grep -q 'Application Not Responding: com.bestintraday'; then
+              adb logcat -d -t 500 > /tmp/best-intraday-logcat.txt
+              exit 1
+            fi
 
       - name: Upload emulator screenshot
         uses: actions/upload-artifact@v4
@@ -58,3 +69,11 @@ jobs:
           name: best-intraday-emulator-ui
           path: /tmp/best-intraday-ui.png
           if-no-files-found: error
+
+      - name: Upload app logcat on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: best-intraday-logcat
+          path: /tmp/best-intraday-logcat.txt
+          if-no-files-found: ignore
